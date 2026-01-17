@@ -1,0 +1,38 @@
+appId: com.keystroke-visualizer.app
+productName: Keystroke Visualizer
+copyright: Copyright © 2025
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - dist/**/*
+  - assets/**/*
+  - package.json
+
+mac:
+  category: public.app-category.utilities
+  icon: assets/icons/icon.icns
+  target:
+    - dmg
+    - zip
+
+win:
+  icon: assets/icons/icon.ico
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+linux:
+  icon: assets/icons
+  category: Utility
+  target:
+    - AppImage
+    - deb
