@@ -1,26 +1,29 @@
-// Preload script for Settings window
-// TODO: 实现完整的 preload 逻辑
-
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron';
+import { IPC_CHANNELS } from '../renderer/shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // 获取配置
-  getConfig: () => ipcRenderer.invoke('get-config'),
+  // Get current config
+  getConfig: () => ipcRenderer.invoke(IPC_CHANNELS.GET_CONFIG),
 
-  // 监听配置变更
+  // Listen for config changes
   onConfigChanged: (callback: (config: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, config: unknown) => callback(config)
-    ipcRenderer.on('config-changed', handler)
-    return () => ipcRenderer.removeListener('config-changed', handler)
+    const handler = (_event: Electron.IpcRendererEvent, config: unknown) => callback(config);
+    ipcRenderer.on(IPC_CHANNELS.CONFIG_CHANGED, handler);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.CONFIG_CHANGED, handler);
   },
 
-  // 更新配置
+  // Update config
   updateConfig: (partial: unknown) => {
-    ipcRenderer.send('update-config', partial)
+    return ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CONFIG, partial);
   },
 
-  // 切换启用状态
-  toggleEnabled: (enabled: boolean) => {
-    ipcRenderer.send('toggle-enabled', enabled)
+  // Get preset position (calculated in main process with Electron screen API)
+  getPresetPosition: (preset: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PRESET_POSITION, preset);
   },
-})
+
+  // Get current preset name for a position
+  getPresetName: (position: { x: number; y: number }) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PRESET_NAME, position);
+  },
+});

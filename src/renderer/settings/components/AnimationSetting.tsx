@@ -11,7 +11,7 @@ function AnimationSetting({ fadeOutDuration, onChange }: AnimationSettingProps) 
   return (
     <div className="py-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-gray-600">淡出时间</span>
+        <span className="text-gray-600">Fade Out Duration</span>
         <span className="text-gray-500 text-sm">{fadeOutDuration}ms</span>
       </div>
       <div className="flex items-center gap-3">

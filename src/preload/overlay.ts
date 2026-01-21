@@ -1,33 +1,36 @@
-// Preload script for Overlay window
-// TODO: 实现完整的 preload 逻辑
-
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron';
+import { IPC_CHANNELS } from '../renderer/shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // 获取配置
-  getConfig: () => ipcRenderer.invoke('get-config'),
+  // Get current config
+  getConfig: () => ipcRenderer.invoke(IPC_CHANNELS.GET_CONFIG),
 
-  // 监听配置变更
+  // Listen for config changes
   onConfigChanged: (callback: (config: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, config: unknown) => callback(config)
-    ipcRenderer.on('config-changed', handler)
-    return () => ipcRenderer.removeListener('config-changed', handler)
+    const handler = (_event: Electron.IpcRendererEvent, config: unknown) => callback(config);
+    ipcRenderer.on(IPC_CHANNELS.CONFIG_CHANGED, handler);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.CONFIG_CHANGED, handler);
   },
 
-  // 监听按键事件
+  // Listen for key press events
   onKeyPressed: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, keyEvent: unknown) => callback(keyEvent)
-    ipcRenderer.on('key-pressed', handler)
-    return () => ipcRenderer.removeListener('key-pressed', handler)
+    const handler = (_event: Electron.IpcRendererEvent, keyEvent: unknown) => callback(keyEvent);
+    ipcRenderer.on(IPC_CHANNELS.KEY_PRESSED, handler);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.KEY_PRESSED, handler);
   },
 
-  // 更新窗口位置
-  updatePosition: (position: { x: number; y: number }) => {
-    ipcRenderer.send('update-position', position)
+  // Get current preset name for a position
+  getPresetName: (position: { x: number; y: number }) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_PRESET_NAME, position);
   },
 
-  // 设置鼠标穿透
-  setIgnoreMouseEvents: (ignore: boolean) => {
-    ipcRenderer.send('set-ignore-mouse-events', ignore)
+  // Save current window position to config
+  savePosition: () => {
+    return ipcRenderer.invoke(IPC_CHANNELS.UPDATE_POSITION);
   },
-})
+
+  // Set mouse pass-through
+  setMousePassThrough: (enabled: boolean) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SET_MOUSE_PASSTHROUGH, enabled);
+  },
+});

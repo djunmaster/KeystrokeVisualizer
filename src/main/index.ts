@@ -1,93 +1,157 @@
-// Main Process 入口文件
-// TODO: 实现完整的主进程逻辑
+// Main Process Entry
+// Batch 6: Full main process integration
 
-import { app, BrowserWindow } from 'electron'
-import { join } from 'path'
+import { app, BrowserWindow } from 'electron';
+import { ConfigStore } from './ConfigStore';
+import { WindowManager } from './WindowManager';
+import { TrayManager } from './TrayManager';
+import { KeyListener } from './KeyListener';
+import { setupIPCHandlers } from './ipc-handlers';
 
-// 防止应用多开
-const gotTheLock = app.requestSingleInstanceLock()
+// Prevent multiple instances
+const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
-  app.quit()
+  app.quit();
 }
 
-let overlayWindow: BrowserWindow | null = null
-let settingsWindow: BrowserWindow | null = null
+// Module instances
+let configStore: ConfigStore;
+let windowManager: WindowManager;
+let trayManager: TrayManager;
+let keyListener: KeyListener;
+let shouldStopKeyListener = true;
 
-function createOverlayWindow() {
-  overlayWindow = new BrowserWindow({
-    width: 400,
-    height: 200,
-    transparent: true,
-    frame: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    webPreferences: {
-      preload: join(__dirname, '../preload/overlay.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
+/**
+ * Initialize all modules
+ */
+function initializeModules(): void {
+  // 1. ConfigStore (no dependencies)
+  configStore = new ConfigStore();
 
-  // 设置鼠标穿透
-  overlayWindow.setIgnoreMouseEvents(true, { forward: true })
+  // 2. WindowManager (depends on ConfigStore)
+  windowManager = new WindowManager(configStore);
 
-  // 加载 Overlay 页面
-  if (process.env.NODE_ENV === 'development') {
-    overlayWindow.loadURL('http://localhost:5173/src/renderer/overlay/index.html')
+  // 3. TrayManager (depends on WindowManager, ConfigStore)
+  trayManager = new TrayManager(windowManager, configStore);
+
+  // 4. KeyListener (depends on WindowManager)
+  keyListener = new KeyListener(windowManager);
+
+  // 5. Setup IPC handlers
+  setupIPCHandlers(configStore, windowManager);
+}
+
+/**
+ * Start the application
+ */
+function startApp(): void {
+  const config = configStore.getConfig();
+
+  // Create Overlay window (must be created first for correct z-index)
+  windowManager.createOverlayWindow(config);
+
+  // Create tray icon
+  trayManager.create();
+
+  // Start keyboard listener only when enabled (defer to avoid startup stalls)
+  updateKeyListenerState(config.isEnabled);
+
+  // Apply current auto-start setting
+  updateAutoStart(config.autoStart);
+
+  // Listen for config changes to update auto-start setting
+  configStore.onDidChange((newConfig, oldConfig) => {
+    updateAutoStart(newConfig.autoStart);
+    if (!oldConfig || newConfig.isEnabled !== oldConfig.isEnabled) {
+      updateKeyListenerState(newConfig.isEnabled);
+    }
+  });
+}
+
+/**
+ * Update auto-start setting
+ */
+function updateAutoStart(enabled: boolean): void {
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+  });
+}
+
+/**
+ * Start/stop key listener based on enabled state.
+ * Defers start so UI can render before hook initialization.
+ */
+function updateKeyListenerState(enabled: boolean): void {
+  if (!keyListener) return;
+  if (enabled) {
+    setTimeout(() => keyListener.start(), 0);
   } else {
-    overlayWindow.loadFile(join(__dirname, '../renderer/overlay/index.html'))
+    keyListener.stop();
   }
 }
 
-function createSettingsWindow() {
-  settingsWindow = new BrowserWindow({
-    width: 480,
-    height: 400,
-    resizable: false,
-    center: true,
-    title: '按键可视化工具 - 设置',
-    webPreferences: {
-      preload: join(__dirname, '../preload/settings.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-
-  // 加载 Settings 页面
-  if (process.env.NODE_ENV === 'development') {
-    settingsWindow.loadURL('http://localhost:5173/src/renderer/settings/index.html')
-  } else {
-    settingsWindow.loadFile(join(__dirname, '../renderer/settings/index.html'))
+/**
+ * Cleanup resources
+ */
+function cleanup(): void {
+  // Stop keyboard listener
+  if (keyListener && shouldStopKeyListener) {
+    keyListener.stop();
   }
 
-  // 关闭时隐藏而非退出
-  settingsWindow.on('close', (event) => {
-    event.preventDefault()
-    settingsWindow?.hide()
-  })
+  // Destroy tray
+  if (trayManager) {
+    trayManager.destroy();
+  }
+
+  // Destroy all windows
+  if (windowManager) {
+    windowManager.destroyAll();
+  }
 }
 
+// ==================== App Lifecycle Events ====================
+
+// App ready
 app.whenReady().then(() => {
-  createOverlayWindow()
+  initializeModules();
+  startApp();
+});
 
-  // TODO: 初始化 TrayManager
-  // TODO: 初始化 KeyListener
-  // TODO: 初始化 ConfigStore
-  // TODO: 设置 IPC handlers
-})
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
+// Handle second instance launch (prevent multiple instances)
+app.on('second-instance', () => {
+  // Show settings window
+  if (windowManager) {
+    windowManager.showSettings();
   }
-})
+});
 
+// All windows closed (tray app behavior: don't quit)
+app.on('window-all-closed', () => {
+  // Tray app: keep running when windows are closed
+  // Do nothing, keep tray running
+});
+
+// App about to quit (set quitting flag)
+app.on('before-quit', () => {
+  // Skip stopping key listener to avoid exit stalls
+  shouldStopKeyListener = false;
+  if (windowManager) {
+    windowManager.setQuitting(true);
+  }
+});
+
+// App quitting (cleanup resources)
+app.on('will-quit', () => {
+  cleanup();
+});
+
+// macOS: dock icon clicked
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
-    createOverlayWindow()
+    // If no windows, show settings window
+    if (windowManager) {
+      windowManager.showSettings();
+    }
   }
-})
-
-// 导出窗口引用供其他模块使用
-export { overlayWindow, settingsWindow, createSettingsWindow }
+});

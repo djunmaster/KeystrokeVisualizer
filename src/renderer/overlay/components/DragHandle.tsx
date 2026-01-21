@@ -1,32 +1,61 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react';
 
 function DragHandle() {
-  const [isDragging, setIsDragging] = useState(false)
-  const [isHovered, setIsHovered] = useState(false)
+  const [isDragging, setIsDragging] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
 
-  const handleMouseEnter = () => {
-    setIsHovered(true)
-    // TODO: 通知 Main Process 取消鼠标穿透
-    // window.electronAPI.setIgnoreMouseEvents(false)
-  }
+  const handleMouseEnter = async () => {
+    setIsHovered(true);
+    // Disable mouse pass-through to allow dragging
+    try {
+      await window.electronAPI.setMousePassThrough(false);
+    } catch (error) {
+      console.error('Failed to disable mouse pass-through:', error);
+    }
+  };
 
   const handleMouseLeave = () => {
     if (!isDragging) {
-      setIsHovered(false)
-      // TODO: 通知 Main Process 恢复鼠标穿透
-      // window.electronAPI.setIgnoreMouseEvents(true)
+      setIsHovered(false);
+      // Re-enable mouse pass-through
+      window.electronAPI.setMousePassThrough(true).catch((error) => {
+        console.error('Failed to enable mouse pass-through:', error);
+      });
     }
-  }
+  };
 
   const handleMouseDown = () => {
-    setIsDragging(true)
-  }
+    setIsDragging(true);
+  };
 
-  const handleMouseUp = () => {
-    setIsDragging(false)
-    // TODO: 保存新位置到配置
-    // window.electronAPI.updatePosition({ x, y })
-  }
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseUp = async () => {
+      setIsDragging(false);
+      setIsHovered(false);
+
+      // Save current window position to config
+      try {
+        await window.electronAPI.savePosition();
+      } catch (error) {
+        console.error('Failed to save position:', error);
+      }
+
+      // Re-enable mouse pass-through
+      try {
+        await window.electronAPI.setMousePassThrough(true);
+      } catch (error) {
+        console.error('Failed to enable mouse pass-through:', error);
+      }
+    };
+
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging]);
 
   return (
     <div
@@ -36,7 +65,6 @@ function DragHandle() {
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <svg
@@ -47,7 +75,7 @@ function DragHandle() {
         <path d="M7 2a2 2 0 1 0 .001 4.001A2 2 0 0 0 7 2zm0 6a2 2 0 1 0 .001 4.001A2 2 0 0 0 7 8zm0 6a2 2 0 1 0 .001 4.001A2 2 0 0 0 7 14zm6-8a2 2 0 1 0-.001-4.001A2 2 0 0 0 13 6zm0 2a2 2 0 1 0 .001 4.001A2 2 0 0 0 13 8zm0 6a2 2 0 1 0 .001 4.001A2 2 0 0 0 13 14z" />
       </svg>
     </div>
-  )
+  );
 }
 
-export default DragHandle
+export default DragHandle;

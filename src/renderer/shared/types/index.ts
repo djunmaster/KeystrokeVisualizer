@@ -1,9 +1,12 @@
-// 配置状态类型定义
+// ==================== Types ====================
+
+// Config state
 export interface ConfigState {
   isEnabled: boolean;
   position: Position;
   fadeOutDuration: number;
   autoStart: boolean;
+  maxDisplayCount: number; // Maximum number of key display blocks
 }
 
 export interface Position {
@@ -11,13 +14,13 @@ export interface Position {
   y: number;
 }
 
-// 按键事件类型
+// Key press event
 export interface KeyPressEvent {
   keys: string[];
   timestamp: number;
 }
 
-// 预设位置枚举
+// Preset positions
 export type PresetPosition =
   | 'bottom-right'
   | 'bottom-left'
@@ -27,21 +30,43 @@ export type PresetPosition =
   | 'top-center'
   | 'custom';
 
-// IPC 通道名称常量
+// ==================== IPC Channels ====================
+
 export const IPC_CHANNELS = {
+  // Key events
   KEY_PRESSED: 'key-pressed',
+
+  // Config management
   CONFIG_CHANGED: 'config-changed',
   UPDATE_CONFIG: 'update-config',
-  TOGGLE_ENABLED: 'toggle-enabled',
   GET_CONFIG: 'get-config',
+
+  // Position management
   UPDATE_POSITION: 'update-position',
+  GET_PRESET_POSITION: 'get-preset-position',
+  GET_PRESET_NAME: 'get-preset-name',
+
+  // Window control
+  TOGGLE_ENABLED: 'toggle-enabled',
   OPEN_SETTINGS: 'open-settings',
+  CLOSE_SETTINGS: 'close-settings',
+  SHOW_OVERLAY: 'show-overlay',
+  HIDE_OVERLAY: 'hide-overlay',
+  SET_MOUSE_PASSTHROUGH: 'set-mouse-passthrough',
+
+  // Tray control
+  QUIT_APP: 'quit-app',
 } as const;
 
-// 默认配置
+// IPC channel type
+export type IPCChannel = typeof IPC_CHANNELS[keyof typeof IPC_CHANNELS];
+
+// ==================== Default Config ====================
+
 export const DEFAULT_CONFIG: ConfigState = {
   isEnabled: false,
-  position: { x: -1, y: -1 }, // -1 表示使用默认位置
+  position: { x: -1, y: -1 }, // -1 means use default position
   fadeOutDuration: 1000,
   autoStart: false,
+  maxDisplayCount: 6, // Default to 6 display blocks
 };
