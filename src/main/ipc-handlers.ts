@@ -29,17 +29,14 @@ export function setupIPCHandlers(configStore: ConfigStore, windowManager: Window
       );
     }
 
-    const newConfig = configStore.updateConfig(partialConfig);
-
-    // Broadcast config change to all windows
-    windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, newConfig);
+    configStore.updateConfig(partialConfig);
 
     // Apply position change to overlay window
     if (partialConfig.position) {
       windowManager.updateOverlayPosition(partialConfig.position.x, partialConfig.position.y);
     }
 
-    // Apply size change to overlay window
+    // Apply size change to overlay window (may update position in config)
     if (typeof partialConfig.maxDisplayCount === 'number') {
       windowManager.updateOverlaySize(partialConfig.maxDisplayCount);
     }
@@ -53,7 +50,13 @@ export function setupIPCHandlers(configStore: ConfigStore, windowManager: Window
       }
     }
 
-    return newConfig;
+    // Get final config after all operations (position may have been updated by updateOverlaySize)
+    const finalConfig = configStore.getConfig();
+
+    // Broadcast config change to all windows
+    windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, finalConfig);
+
+    return finalConfig;
   });
 
   // ==================== Position Management ====================

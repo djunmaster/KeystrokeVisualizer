@@ -59,9 +59,12 @@ function startApp(): void {
   // Apply current auto-start setting
   updateAutoStart(config.autoStart);
 
-  // Listen for config changes to update auto-start setting
+  // Listen for config changes to update auto-start and key listener state
   configStore.onDidChange((newConfig, oldConfig) => {
-    updateAutoStart(newConfig.autoStart);
+    // Only update auto-start if the value actually changed
+    if (!oldConfig || newConfig.autoStart !== oldConfig.autoStart) {
+      updateAutoStart(newConfig.autoStart);
+    }
     if (!oldConfig || newConfig.isEnabled !== oldConfig.isEnabled) {
       updateKeyListenerState(newConfig.isEnabled);
     }
@@ -70,10 +73,13 @@ function startApp(): void {
 
 /**
  * Update auto-start setting
+ * Uses setImmediate to avoid blocking the UI thread on Windows
  */
 function updateAutoStart(enabled: boolean): void {
-  app.setLoginItemSettings({
-    openAtLogin: enabled,
+  setImmediate(() => {
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+    });
   });
 }
 

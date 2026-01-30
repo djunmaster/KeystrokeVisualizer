@@ -27,7 +27,7 @@ function KeyItem({ keys, fadeOutDuration, timestamp }: KeyItemProps) {
 
   return (
     <div
-      className="flex items-center gap-1 px-3 py-2 bg-black/80 rounded-lg text-white text-lg font-medium shadow-lg backdrop-blur-sm"
+      className="flex items-center gap-1 px-3 py-2 bg-black/80 rounded-lg text-white text-lg font-medium shadow-lg backdrop-blur-sm h-[54px] min-h-[54px]"
       style={{ opacity }}
     >
       {keys.map((key, index) => (

@@ -172,13 +172,21 @@ export class WindowManager {
     const [, oldHeight] = this.overlayWindow.getSize();
     const display = this.getDisplayForWindow(this.overlayWindow);
     const { y: areaY, height: areaHeight } = display.workArea;
-    const anchor = y + oldHeight / 2 <= areaY + areaHeight / 2 ? 'top' : 'bottom';
+
+    // Use window bottom edge proximity to determine anchor (more reliable than center)
+    // If window bottom is near screen bottom (within 50px), anchor to bottom
+    const windowBottom = y + oldHeight;
+    const isNearBottom = windowBottom >= areaY + areaHeight - 50;
+    const anchor = isNearBottom ? 'bottom' : 'top';
     const nextY = anchor === 'bottom' ? y + oldHeight - newHeight : y;
 
     this.overlayWindow.setSize(newWidth, newHeight);
 
     const validated = this.validatePosition(x, nextY, maxDisplayCount);
     this.overlayWindow.setPosition(validated.x, validated.y);
+
+    // Update config position to match new validated position
+    this.configStore.set('position', validated);
   }
 
   /**
