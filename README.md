@@ -8,8 +8,8 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `Keystroke Visualizer Setup 1.0.0.exe` | 安装版，可选择安装目录并创建快捷方式 |
-| `Keystroke Visualizer 1.0.0.exe` | 便携版，无需安装 |
+| [Keystroke.Visualizer.Setup.1.0.0.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.0/Keystroke.Visualizer.Setup.1.0.0.exe) | 安装版，可选择安装目录并创建快捷方式 |
+| [Keystroke.Visualizer.1.0.0.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.0/Keystroke.Visualizer.1.0.0.exe) | 便携版，无需安装 |
 
 首次运行后，应用会在系统托盘驻留。通过托盘菜单打开设置，可调整显示位置、动画、显示数量和界面语言。浮层可直接拖动；设置页也支持可视化编辑位置与实时预览。
 
