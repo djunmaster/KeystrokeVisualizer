@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { ConfigState } from '../shared/types';
 import PositionSetting from './components/PositionSetting';
 import AnimationSetting from './components/AnimationSetting';
@@ -17,39 +17,77 @@ const electronAPI = (window as unknown as { electronAPI: SettingsElectronAPI }).
 
 function App() {
   const [config, setConfig] = useState<ConfigState | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const confirmedConfig = useRef<ConfigState | null>(null);
+  const pendingChanges = useRef<Partial<ConfigState>>({});
+  const inFlightChanges = useRef<Partial<ConfigState>>({});
+  const isSaving = useRef(false);
 
-  useEffect(() => {
-    // Get initial config from Main Process
-    electronAPI.getConfig().then((cfg) => {
-      setConfig(cfg);
-    });
-
-    // Listen for config changes from Main Process
-    const unsubscribe = electronAPI.onConfigChanged((newConfig) => {
-      setConfig(newConfig);
-    });
-
-    return unsubscribe;
+  const publishConfig = useCallback((saved: ConfigState) => {
+    confirmedConfig.current = saved;
+    setConfig({ ...saved, ...inFlightChanges.current, ...pendingChanges.current });
   }, []);
 
-  const handleConfigChange = async (partial: Partial<ConfigState>) => {
-    // Optimistically update UI
-    if (config) {
-      setConfig({ ...config, ...partial });
-    }
+  useEffect(() => {
+    let active = true;
+    let receivedChange = false;
+    const unsubscribe = electronAPI.onConfigChanged((newConfig) => {
+      receivedChange = true;
+      publishConfig(newConfig);
+    });
 
-    // Send update to Main Process
-    try {
-      const newConfig = await electronAPI.updateConfig(partial);
-      // Update with actual config from Main Process (in case it was modified)
-      setConfig(newConfig);
-    } catch (error) {
-      console.error('Failed to update config:', error);
-      // Revert to previous config on error
-      if (config) {
-        setConfig(config);
+    electronAPI.getConfig().then((initialConfig) => {
+      if (active && !receivedChange) publishConfig(initialConfig);
+    }).catch((error) => {
+      if (active) {
+        console.error('Failed to load config:', error);
+        setLoadError(true);
       }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [publishConfig]);
+
+  const savePendingChanges = useCallback(async () => {
+    if (isSaving.current) return;
+    isSaving.current = true;
+
+    try {
+      while (Object.keys(pendingChanges.current).length > 0) {
+        const partial = pendingChanges.current;
+        pendingChanges.current = {};
+        inFlightChanges.current = partial;
+
+        try {
+          const saved = await electronAPI.updateConfig(partial);
+          inFlightChanges.current = {};
+          publishConfig(saved);
+          setSaveError(false);
+        } catch (error) {
+          inFlightChanges.current = {};
+          console.error('Failed to update config:', error);
+          setSaveError(true);
+          try {
+            publishConfig(await electronAPI.getConfig());
+          } catch (loadError) {
+            console.error('Failed to reload config:', loadError);
+            if (confirmedConfig.current) publishConfig(confirmedConfig.current);
+          }
+        }
+      }
+    } finally {
+      isSaving.current = false;
     }
+  }, [publishConfig]);
+
+  const handleConfigChange = (partial: Partial<ConfigState>) => {
+    pendingChanges.current = { ...pendingChanges.current, ...partial };
+    setConfig((current) => current && { ...current, ...partial });
+    void savePendingChanges();
   };
 
   const handleToggleEnabled = () => {
@@ -58,10 +96,27 @@ function App() {
     }
   };
 
+  const retryLoad = () => {
+    setLoadError(false);
+    electronAPI.getConfig().then((loaded) => {
+      if (!confirmedConfig.current) publishConfig(loaded);
+    }).catch((error) => {
+      console.error('Failed to load config:', error);
+      setLoadError(true);
+    });
+  };
+
   if (!config) {
     return (
       <div className="min-h-screen bg-gray-100 p-6 flex items-center justify-center">
-        <div className="text-gray-600">Loading...</div>
+        <div className="text-gray-600 text-center" role={loadError ? 'alert' : undefined}>
+          {loadError ? (
+            <>
+              <p>Could not load settings.</p>
+              <button onClick={retryLoad} className="mt-3 px-3 py-1.5 bg-white border rounded text-gray-700">Retry</button>
+            </>
+          ) : 'Loading...'}
+        </div>
       </div>
     );
   }
@@ -71,6 +126,7 @@ function App() {
       <h1 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
         <span>Settings</span>
       </h1>
+      {saveError && <p role="alert" className="mb-4 text-sm text-red-700">Could not save settings. Please try again.</p>}
 
       {/* Display Settings */}
       <section className="bg-white rounded-lg shadow p-4 mb-4">
@@ -127,14 +183,6 @@ function App() {
         <h2 className="text-lg font-semibold text-gray-700 mb-4">About</h2>
         <div className="flex items-center justify-between text-gray-600">
           <span>Version: v1.0.0</span>
-          <div className="flex gap-2">
-            <button className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200 transition-colors">
-              Check for Updates
-            </button>
-            <button className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200 transition-colors">
-              GitHub
-            </button>
-          </div>
         </div>
       </section>
     </div>

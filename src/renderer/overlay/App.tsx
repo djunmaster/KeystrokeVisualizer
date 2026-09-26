@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
 import KeyDisplay from './components/KeyDisplay';
 import DragHandle from './components/DragHandle';
-import { ConfigState } from '../shared/types';
+import { ConfigState, KeyPressEvent } from '../shared/types';
 
 declare global {
   interface Window {
     electronAPI: {
       getConfig: () => Promise<ConfigState>;
       onConfigChanged: (callback: (config: ConfigState) => void) => () => void;
-      onKeyPressed: (callback: (event: any) => void) => () => void;
+      onKeyPressed: (callback: (event: KeyPressEvent) => void) => () => void;
       savePosition: () => Promise<void>;
       setMousePassThrough: (enabled: boolean) => Promise<void>;
       getPresetName: (position: { x: number; y: number }) => Promise<string>;
@@ -16,53 +16,63 @@ declare global {
   }
 }
 
+async function getPresetFromPosition(position: { x: number; y: number }) {
+  const name = await window.electronAPI.getPresetName(position);
+  if (
+    name === 'bottom-right' ||
+    name === 'bottom-left' ||
+    name === 'top-right' ||
+    name === 'top-left' ||
+    name === 'bottom-center' ||
+    name === 'top-center'
+  ) {
+    return name;
+  }
+  return 'bottom-right';
+}
+
 function App() {
   const [config, setConfig] = useState<ConfigState | null>(null);
   const [preset, setPreset] = useState<'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'bottom-center' | 'top-center'>('bottom-right');
-
-  const getPresetFromPosition = async (position: { x: number; y: number }) => {
-    if (window.electronAPI.getPresetName) {
-      const name = await window.electronAPI.getPresetName(position);
-      if (
-        name === 'bottom-right' ||
-        name === 'bottom-left' ||
-        name === 'top-right' ||
-        name === 'top-left' ||
-        name === 'bottom-center' ||
-        name === 'top-center'
-      ) {
-        return name;
-      }
-    }
-    return 'bottom-right';
-  };
+  const positionX = config?.position.x;
+  const positionY = config?.position.y;
 
   useEffect(() => {
-    // Get initial config
-    window.electronAPI.getConfig().then((cfg) => {
-      setConfig(cfg);
-    });
-
-    // Listen for config changes
+    let isActive = true;
+    let receivedChange = false;
     const unsubscribe = window.electronAPI.onConfigChanged((newConfig) => {
+      receivedChange = true;
       setConfig(newConfig);
     });
 
-    return unsubscribe;
+    window.electronAPI.getConfig().then((cfg) => {
+      if (isActive && !receivedChange) {
+        setConfig(cfg);
+      }
+    }).catch((error) => {
+      console.error('Failed to load overlay config:', error);
+    });
+
+    return () => {
+      isActive = false;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
-    if (!config) return;
+    if (positionX === undefined || positionY === undefined) return;
     let isActive = true;
-    getPresetFromPosition(config.position).then((name) => {
+    getPresetFromPosition({ x: positionX, y: positionY }).then((name) => {
       if (isActive) {
         setPreset(name);
       }
+    }).catch((error) => {
+      console.error('Failed to detect overlay position:', error);
     });
     return () => {
       isActive = false;
     };
-  }, [config?.position.x, config?.position.y]);
+  }, [positionX, positionY]);
 
   if (!config || !config.isEnabled) {
     return null;

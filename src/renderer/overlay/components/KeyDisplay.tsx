@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import KeyItem from './KeyItem';
+import { KeyPressEvent } from '../../shared/types';
 
-interface KeyPressEvent {
+interface DisplayKeyPress extends KeyPressEvent {
   id: string;
-  keys: string[];
-  timestamp: number;
 }
 
 interface KeyDisplayProps {
@@ -15,23 +14,25 @@ interface KeyDisplayProps {
 }
 
 function KeyDisplay({ fadeOutDuration, maxDisplayCount, stackFrom, alignX }: KeyDisplayProps) {
-  const [keyPresses, setKeyPresses] = useState<KeyPressEvent[]>([]);
+  const [keyPresses, setKeyPresses] = useState<DisplayKeyPress[]>([]);
+  const nextId = useRef(0);
+  const displayLimit = Number.isFinite(maxDisplayCount) ? Math.max(1, Math.floor(maxDisplayCount)) : 1;
 
   // Trim existing keyPresses when maxDisplayCount decreases
   useEffect(() => {
     setKeyPresses((prev) => {
-      if (prev.length > maxDisplayCount) {
-        return prev.slice(-maxDisplayCount);
+      if (prev.length > displayLimit) {
+        return prev.slice(-displayLimit);
       }
       return prev;
     });
-  }, [maxDisplayCount]);
+  }, [displayLimit]);
 
   useEffect(() => {
     // Listen for key press events from Main Process
-    const unsubscribe = window.electronAPI.onKeyPressed((event: { keys: string[]; timestamp: number }) => {
-      const newKeyPress: KeyPressEvent = {
-        id: `${event.timestamp}-${Math.random()}`,
+    const unsubscribe = window.electronAPI.onKeyPressed((event: KeyPressEvent) => {
+      const newKeyPress: DisplayKeyPress = {
+        id: String(nextId.current++),
         keys: event.keys,
         timestamp: event.timestamp,
       };
@@ -39,27 +40,29 @@ function KeyDisplay({ fadeOutDuration, maxDisplayCount, stackFrom, alignX }: Key
       setKeyPresses((prev) => {
         const updated = [...prev, newKeyPress];
         // Limit to maxDisplayCount items
-        if (updated.length > maxDisplayCount) {
-          return updated.slice(-maxDisplayCount);
+        if (updated.length > displayLimit) {
+          return updated.slice(-displayLimit);
         }
         return updated;
       });
     });
 
     return unsubscribe;
-  }, [maxDisplayCount]);
+  }, [displayLimit]);
 
-  // Remove faded out keys
   useEffect(() => {
-    const interval = setInterval(() => {
+    if (keyPresses.length === 0) return;
+
+    const nextExpiry = Math.min(...keyPresses.map((press) => press.timestamp + fadeOutDuration + 500));
+    const timeout = setTimeout(() => {
       const now = Date.now();
       setKeyPresses((prev) =>
         prev.filter((kp) => now - kp.timestamp < fadeOutDuration + 500)
       );
-    }, 100);
+    }, Math.max(0, nextExpiry - Date.now()));
 
-    return () => clearInterval(interval);
-  }, [fadeOutDuration]);
+    return () => clearTimeout(timeout);
+  }, [fadeOutDuration, keyPresses]);
 
   const stackClass = stackFrom === 'bottom' ? 'justify-end' : 'justify-start';
   const alignClass =

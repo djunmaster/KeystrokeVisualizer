@@ -7,6 +7,7 @@ import { WindowManager } from './WindowManager';
 import { TrayManager } from './TrayManager';
 import { KeyListener } from './KeyListener';
 import { setupIPCHandlers } from './ipc-handlers';
+import { IPC_CHANNELS } from '../renderer/shared/types';
 
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock();
@@ -20,6 +21,7 @@ let windowManager: WindowManager;
 let trayManager: TrayManager;
 let keyListener: KeyListener;
 let shouldStopKeyListener = true;
+let pendingKeyListenerStart: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Initialize all modules
@@ -76,6 +78,7 @@ function startApp(): void {
  * Uses setImmediate to avoid blocking the UI thread on Windows
  */
 function updateAutoStart(enabled: boolean): void {
+  if (!app.isPackaged || (process.platform !== 'win32' && process.platform !== 'darwin')) return;
   setImmediate(() => {
     app.setLoginItemSettings({
       openAtLogin: enabled,
@@ -89,8 +92,22 @@ function updateAutoStart(enabled: boolean): void {
  */
 function updateKeyListenerState(enabled: boolean): void {
   if (!keyListener) return;
+  if (pendingKeyListenerStart !== null) {
+    clearTimeout(pendingKeyListenerStart);
+    pendingKeyListenerStart = null;
+  }
   if (enabled) {
-    setTimeout(() => keyListener.start(), 0);
+    pendingKeyListenerStart = setTimeout(() => {
+      pendingKeyListenerStart = null;
+      try {
+        keyListener.start();
+      } catch (error) {
+        console.error('Failed to start keyboard listener:', error);
+        configStore.set('isEnabled', false);
+        windowManager.hideOverlay();
+        windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, configStore.getConfig());
+      }
+    }, 0);
   } else {
     keyListener.stop();
   }
@@ -100,6 +117,10 @@ function updateKeyListenerState(enabled: boolean): void {
  * Cleanup resources
  */
 function cleanup(): void {
+  if (pendingKeyListenerStart !== null) {
+    clearTimeout(pendingKeyListenerStart);
+    pendingKeyListenerStart = null;
+  }
   // Stop keyboard listener
   if (keyListener && shouldStopKeyListener) {
     keyListener.stop();
@@ -120,6 +141,7 @@ function cleanup(): void {
 
 // App ready
 app.whenReady().then(() => {
+  if (!gotTheLock) return;
   initializeModules();
   startApp();
 });

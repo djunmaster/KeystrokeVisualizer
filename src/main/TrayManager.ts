@@ -11,6 +11,7 @@ import { IPC_CHANNELS } from '../renderer/shared/types';
  */
 export class TrayManager {
   private tray: Tray | null = null;
+  private subscribedToConfig = false;
   private windowManager: WindowManager;
   private configStore: ConfigStore;
 
@@ -23,6 +24,8 @@ export class TrayManager {
    * Create and setup tray icon.
    */
   create(): void {
+    if (this.tray) return;
+
     const icon = this.getTrayIcon();
     this.tray = new Tray(icon);
 
@@ -39,10 +42,14 @@ export class TrayManager {
     this.updateContextMenu();
 
     // Listen for config changes to update menu
-    this.configStore.onDidChange((newConfig) => {
-      this.updateContextMenu();
-      this.updateIcon(newConfig.isEnabled);
-    });
+    if (!this.subscribedToConfig) {
+      this.configStore.onDidChange((newConfig, oldConfig) => {
+        if (oldConfig?.isEnabled === newConfig.isEnabled) return;
+        this.updateContextMenu();
+        this.updateIcon(newConfig.isEnabled);
+      });
+      this.subscribedToConfig = true;
+    }
   }
 
   /**
@@ -67,8 +74,6 @@ export class TrayManager {
           } else {
             this.windowManager.hideOverlay();
           }
-          this.updateContextMenu();
-          this.updateIcon(newState);
         },
       },
       {

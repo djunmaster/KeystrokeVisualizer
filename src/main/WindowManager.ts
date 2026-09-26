@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
 import { join } from 'path';
-import { ConfigState } from '../renderer/shared/types';
+import { ConfigState, IPC_CHANNELS } from '../renderer/shared/types';
 import { ConfigStore } from './ConfigStore';
 
 /**
@@ -12,6 +12,7 @@ export class WindowManager {
   private settingsWindow: BrowserWindow | null = null;
   private configStore: ConfigStore;
   private isQuitting = false;
+  private overlayMoveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(configStore: ConfigStore) {
     this.configStore = configStore;
@@ -48,6 +49,32 @@ export class WindowManager {
       },
     });
 
+    const overlayWindow = this.overlayWindow;
+    const saveOverlayPosition = () => {
+      if (overlayWindow.isDestroyed()) return;
+      const [nextX, nextY] = overlayWindow.getPosition();
+      const { x: savedX, y: savedY } = this.configStore.get('position');
+      if (nextX === savedX && nextY === savedY) return;
+      this.configStore.set('position', { x: nextX, y: nextY });
+      this.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, this.configStore.getConfig());
+    };
+
+    if (process.platform === 'win32') {
+      overlayWindow.on('moved', saveOverlayPosition);
+    } else {
+      overlayWindow.on('move', () => {
+        if (this.overlayMoveTimer) clearTimeout(this.overlayMoveTimer);
+        this.overlayMoveTimer = setTimeout(() => {
+          this.overlayMoveTimer = null;
+          saveOverlayPosition();
+        }, 200);
+      });
+      overlayWindow.on('closed', () => {
+        if (this.overlayMoveTimer) clearTimeout(this.overlayMoveTimer);
+        this.overlayMoveTimer = null;
+      });
+    }
+
     // Enable mouse pass-through by default
     this.overlayWindow.setIgnoreMouseEvents(true, { forward: true });
 
@@ -55,7 +82,7 @@ export class WindowManager {
     if (process.env.NODE_ENV === 'development') {
       this.overlayWindow.loadURL('http://localhost:5173/src/renderer/overlay/index.html');
     } else {
-      this.overlayWindow.loadFile(join(__dirname, '../renderer/overlay/index.html'));
+      this.overlayWindow.loadFile(join(__dirname, '../src/renderer/overlay/index.html'));
     }
 
     return this.overlayWindow;
@@ -88,7 +115,7 @@ export class WindowManager {
     if (process.env.NODE_ENV === 'development') {
       this.settingsWindow.loadURL('http://localhost:5173/src/renderer/settings/index.html');
     } else {
-      this.settingsWindow.loadFile(join(__dirname, '../renderer/settings/index.html'));
+      this.settingsWindow.loadFile(join(__dirname, '../src/renderer/settings/index.html'));
     }
 
     // Hide instead of close (unless app is quitting)
@@ -180,13 +207,14 @@ export class WindowManager {
     const anchor = isNearBottom ? 'bottom' : 'top';
     const nextY = anchor === 'bottom' ? y + oldHeight - newHeight : y;
 
-    this.overlayWindow.setSize(newWidth, newHeight);
-
     const validated = this.validatePosition(x, nextY, maxDisplayCount);
-    this.overlayWindow.setPosition(validated.x, validated.y);
-
-    // Update config position to match new validated position
-    this.configStore.set('position', validated);
+    // Persist before setBounds so its native move event does not trigger a second write.
+    const saved = this.configStore.get('position');
+    if (saved.x !== validated.x || saved.y !== validated.y) {
+      this.configStore.set('position', validated);
+    }
+    // setBounds also applies shrink requests to the non-resizable overlay.
+    this.overlayWindow.setBounds({ ...validated, width: newWidth, height: newHeight });
   }
 
   /**
@@ -201,7 +229,7 @@ export class WindowManager {
   /**
    * Send message to Overlay window.
    */
-  sendToOverlay(channel: string, data: any): void {
+  sendToOverlay(channel: string, data: unknown): void {
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
       this.overlayWindow.webContents.send(channel, data);
     }
@@ -210,7 +238,7 @@ export class WindowManager {
   /**
    * Send message to Settings window.
    */
-  sendToSettings(channel: string, data: any): void {
+  sendToSettings(channel: string, data: unknown): void {
     if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
       this.settingsWindow.webContents.send(channel, data);
     }
@@ -219,7 +247,7 @@ export class WindowManager {
   /**
    * Send message to all windows.
    */
-  sendToAll(channel: string, data: any): void {
+  sendToAll(channel: string, data: unknown): void {
     this.sendToOverlay(channel, data);
     this.sendToSettings(channel, data);
   }
@@ -251,18 +279,17 @@ export class WindowManager {
    * Public so IPC handlers can validate before saving to config.
    */
   validatePosition(x: number, y: number, maxDisplayCount?: number): { x: number; y: number } {
-    const display = screen.getDisplayNearestPoint({ x, y });
-    const { x: boundsX, width: boundsWidth } = display.bounds;
-    const { y: areaY, height: areaHeight } = display.workArea;
-    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount);
-
     // Reject invalid values (NaN, Infinity, etc.)
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      return this.getDefaultPosition();
+      return this.getDefaultPosition(maxDisplayCount);
     }
 
+    const display = screen.getDisplayNearestPoint({ x, y });
+    const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
+    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount);
+
     // Clamp to visible area (allow at least 50px of window visible)
-    const clampedX = Math.max(boundsX - windowWidth + 50, Math.min(x, boundsX + boundsWidth - 50));
+    const clampedX = Math.max(areaX - windowWidth + 50, Math.min(x, areaX + areaWidth - 50));
     const clampedY = Math.max(areaY - windowHeight + 50, Math.min(y, areaY + areaHeight - 50));
 
     return { x: clampedX, y: clampedY };
@@ -276,8 +303,9 @@ export class WindowManager {
     position: { x: number; y: number },
     maxDisplayCount?: number
   ): { x: number; y: number } {
-    // Use configured position if valid
-    if (position.x >= 0 && position.y >= 0) {
+    // Only (-1, -1) is the default-position sentinel; other negative coordinates
+    // are valid on displays to the left or above the primary display.
+    if (position.x !== -1 || position.y !== -1) {
       return this.validatePosition(position.x, position.y, maxDisplayCount);
     }
 
@@ -290,11 +318,10 @@ export class WindowManager {
    */
   private getDefaultPosition(maxDisplayCount?: number): { x: number; y: number } {
     const display = this.getActiveDisplay();
-    const { x: boundsX, width: boundsWidth } = display.bounds;
-    const { y: areaY, height: areaHeight } = display.workArea;
+    const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
     const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount);
     return {
-      x: boundsX + boundsWidth - (windowWidth + 20),
+      x: areaX + areaWidth - (windowWidth + 20),
       y: areaY + areaHeight - (windowHeight + 20),
     };
   }
@@ -312,7 +339,11 @@ export class WindowManager {
    * Detect the closest preset for a given position.
    */
   detectPresetFromPosition(position: { x: number; y: number }): string {
-    if (position.x < 0 || position.y < 0) {
+    if (
+      (position.x === -1 && position.y === -1) ||
+      !Number.isFinite(position.x) ||
+      !Number.isFinite(position.y)
+    ) {
       return 'bottom-right';
     }
 
@@ -325,19 +356,19 @@ export class WindowManager {
       'bottom-center',
       'top-center',
     ];
-    const tolerance = 50;
+    let closestPreset = presets[0];
+    let closestDistance = Infinity;
 
     for (const preset of presets) {
       const candidate = this.getPresetPositionOnDisplay(preset, display);
-      if (
-        Math.abs(position.x - candidate.x) < tolerance &&
-        Math.abs(position.y - candidate.y) < tolerance
-      ) {
-        return preset;
+      const distance = (position.x - candidate.x) ** 2 + (position.y - candidate.y) ** 2;
+      if (distance < closestDistance) {
+        closestPreset = preset;
+        closestDistance = distance;
       }
     }
 
-    return 'bottom-right';
+    return closestPreset;
   }
 
   /**
@@ -369,8 +400,7 @@ export class WindowManager {
    * Calculate preset position on a specific display.
    */
   private getPresetPositionOnDisplay(preset: string, display: Electron.Display): { x: number; y: number } {
-    const { x: boundsX, width: boundsWidth } = display.bounds;
-    const { y: areaY, height: areaHeight } = display.workArea;
+    const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
     const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(
       this.configStore.get('maxDisplayCount')
     );
@@ -378,20 +408,20 @@ export class WindowManager {
 
     switch (preset) {
       case 'bottom-right':
-        return { x: boundsX + boundsWidth - windowWidth - MARGIN, y: areaY + areaHeight - windowHeight - MARGIN };
+        return { x: areaX + areaWidth - windowWidth - MARGIN, y: areaY + areaHeight - windowHeight - MARGIN };
       case 'bottom-left':
-        return { x: boundsX + MARGIN, y: areaY + areaHeight - windowHeight - MARGIN };
+        return { x: areaX + MARGIN, y: areaY + areaHeight - windowHeight - MARGIN };
       case 'top-right':
-        return { x: boundsX + boundsWidth - windowWidth - MARGIN, y: areaY + MARGIN };
+        return { x: areaX + areaWidth - windowWidth - MARGIN, y: areaY + MARGIN };
       case 'top-left':
-        return { x: boundsX + MARGIN, y: areaY + MARGIN };
+        return { x: areaX + MARGIN, y: areaY + MARGIN };
       case 'bottom-center':
         return {
-          x: boundsX + Math.round((boundsWidth - windowWidth) / 2),
+          x: areaX + Math.round((areaWidth - windowWidth) / 2),
           y: areaY + areaHeight - windowHeight - MARGIN,
         };
       case 'top-center':
-        return { x: boundsX + Math.round((boundsWidth - windowWidth) / 2), y: areaY + MARGIN };
+        return { x: areaX + Math.round((areaWidth - windowWidth) / 2), y: areaY + MARGIN };
       default:
         return this.getDefaultPosition(this.configStore.get('maxDisplayCount'));
     }

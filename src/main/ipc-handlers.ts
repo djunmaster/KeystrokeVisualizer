@@ -3,6 +3,54 @@ import { ConfigStore } from './ConfigStore';
 import { WindowManager } from './WindowManager';
 import { IPC_CHANNELS, ConfigState } from '../renderer/shared/types';
 
+const MIN_FADE_OUT_DURATION = 200;
+const MAX_FADE_OUT_DURATION = 3000;
+const MIN_DISPLAY_COUNT = 1;
+const MAX_DISPLAY_COUNT = 12;
+
+function parseConfigUpdate(input: unknown): Partial<ConfigState> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError('Config update must be an object');
+  }
+
+  const update: Partial<ConfigState> = {};
+  for (const [key, value] of Object.entries(input)) {
+    switch (key) {
+      case 'isEnabled':
+      case 'autoStart':
+        if (typeof value !== 'boolean') throw new TypeError(`${key} must be a boolean`);
+        update[key] = value;
+        break;
+      case 'fadeOutDuration':
+        if (!Number.isInteger(value) || (value as number) < MIN_FADE_OUT_DURATION || (value as number) > MAX_FADE_OUT_DURATION) {
+          throw new RangeError('fadeOutDuration must be between 200 and 3000 ms');
+        }
+        update.fadeOutDuration = value as number;
+        break;
+      case 'maxDisplayCount':
+        if (!Number.isInteger(value) || (value as number) < MIN_DISPLAY_COUNT || (value as number) > MAX_DISPLAY_COUNT) {
+          throw new RangeError('maxDisplayCount must be an integer between 1 and 12');
+        }
+        update.maxDisplayCount = value as number;
+        break;
+      case 'position': {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          throw new TypeError('position must contain integer x and y coordinates');
+        }
+        const position = value as Record<string, unknown>;
+        if (!Number.isSafeInteger(position.x) || !Number.isSafeInteger(position.y)) {
+          throw new TypeError('position must contain integer x and y coordinates');
+        }
+        update.position = { x: position.x as number, y: position.y as number };
+        break;
+      }
+      default:
+        throw new TypeError(`Unknown config key: ${key}`);
+    }
+  }
+  return update;
+}
+
 /**
  * Setup all IPC handlers.
  */
@@ -15,45 +63,44 @@ export function setupIPCHandlers(configStore: ConfigStore, windowManager: Window
   });
 
   // Update config
-  ipcMain.handle(IPC_CHANNELS.UPDATE_CONFIG, (_, partialConfig: Partial<ConfigState>): ConfigState => {
-    // Validate position before saving to ensure config stores valid values
-    if (partialConfig.position) {
-      const nextCount =
-        typeof partialConfig.maxDisplayCount === 'number'
-          ? partialConfig.maxDisplayCount
-          : configStore.get('maxDisplayCount');
-      partialConfig.position = windowManager.validatePosition(
-        partialConfig.position.x,
-        partialConfig.position.y,
-        nextCount
+  ipcMain.handle(IPC_CHANNELS.UPDATE_CONFIG, (_, input: unknown): ConfigState => {
+    const requested = parseConfigUpdate(input);
+    const previous = configStore.getConfig();
+    if (requested.position) {
+      requested.position = windowManager.validatePosition(
+        requested.position.x,
+        requested.position.y,
+        requested.maxDisplayCount ?? previous.maxDisplayCount
       );
     }
 
-    configStore.updateConfig(partialConfig);
-
-    // Apply position change to overlay window
-    if (partialConfig.position) {
-      windowManager.updateOverlayPosition(partialConfig.position.x, partialConfig.position.y);
+    const changed: Partial<ConfigState> = {};
+    if (requested.isEnabled !== undefined && requested.isEnabled !== previous.isEnabled) changed.isEnabled = requested.isEnabled;
+    if (requested.autoStart !== undefined && requested.autoStart !== previous.autoStart) changed.autoStart = requested.autoStart;
+    if (requested.fadeOutDuration !== undefined && requested.fadeOutDuration !== previous.fadeOutDuration) changed.fadeOutDuration = requested.fadeOutDuration;
+    if (requested.maxDisplayCount !== undefined && requested.maxDisplayCount !== previous.maxDisplayCount) changed.maxDisplayCount = requested.maxDisplayCount;
+    if (requested.position && (requested.position.x !== previous.position.x || requested.position.y !== previous.position.y)) {
+      changed.position = requested.position;
     }
+    if (Object.keys(changed).length === 0) return previous;
 
-    // Apply size change to overlay window (may update position in config)
-    if (typeof partialConfig.maxDisplayCount === 'number') {
-      windowManager.updateOverlaySize(partialConfig.maxDisplayCount);
+    // Resize before applying an explicit position so the requested coordinates win.
+    if (changed.maxDisplayCount !== undefined) {
+      windowManager.updateOverlaySize(changed.maxDisplayCount);
     }
-
-    // Handle isEnabled state change (strict boolean check)
-    if (typeof partialConfig.isEnabled === 'boolean') {
-      if (partialConfig.isEnabled) {
+    configStore.updateConfig(changed);
+    if (changed.position) {
+      windowManager.updateOverlayPosition(changed.position.x, changed.position.y);
+    }
+    if (changed.isEnabled !== undefined) {
+      if (changed.isEnabled) {
         windowManager.showOverlay();
       } else {
         windowManager.hideOverlay();
       }
     }
 
-    // Get final config after all operations (position may have been updated by updateOverlaySize)
     const finalConfig = configStore.getConfig();
-
-    // Broadcast config change to all windows
     windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, finalConfig);
 
     return finalConfig;

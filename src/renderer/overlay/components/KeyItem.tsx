@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 interface KeyItemProps {
   keys: string[]
@@ -7,28 +7,32 @@ interface KeyItemProps {
 }
 
 function KeyItem({ keys, fadeOutDuration, timestamp }: KeyItemProps) {
-  const [opacity, setOpacity] = useState(1)
+  const elementRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const startTime = timestamp
-    const animate = () => {
-      const elapsed = Date.now() - startTime
-      const newOpacity = Math.max(0, 1 - elapsed / fadeOutDuration)
-      setOpacity(newOpacity)
+    const element = elementRef.current
+    if (!element) return
 
-      if (newOpacity > 0) {
-        requestAnimationFrame(animate)
-      }
+    const duration = Math.max(1, fadeOutDuration)
+    const elapsed = Math.max(0, Date.now() - timestamp)
+    const remaining = Math.max(0, duration - elapsed)
+    if (remaining === 0) {
+      element.style.opacity = '0'
+      return
     }
 
-    const animationId = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(animationId)
+    element.style.opacity = ''
+    const animation = element.animate(
+      [{ opacity: Math.max(0, 1 - elapsed / duration) }, { opacity: 0 }],
+      { duration: remaining, fill: 'forwards' }
+    )
+    return () => animation.cancel()
   }, [fadeOutDuration, timestamp])
 
   return (
     <div
+      ref={elementRef}
       className="flex items-center gap-1 px-3 py-2 bg-black/80 rounded-lg text-white text-lg font-medium shadow-lg backdrop-blur-sm h-[54px] min-h-[54px]"
-      style={{ opacity }}
     >
       {keys.map((key, index) => (
         <span key={index} className="flex items-center">

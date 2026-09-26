@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Position } from '../../shared/types'
 
 interface PositionSettingProps {
@@ -14,7 +14,11 @@ const PRESET_POSITIONS = [
   { label: 'Bottom Center', value: 'bottom-center' },
   { label: 'Top Center', value: 'top-center' },
 ]
-type PresetValue = (typeof PRESET_POSITIONS)[number]['value']
+type PresetValue = (typeof PRESET_POSITIONS)[number]['value'] | 'custom'
+interface PositionElectronAPI {
+  getPresetPosition: (preset: string) => Promise<Position>
+  getPresetName: (position: Position) => Promise<string>
+}
 
 // Window size constants (must match WindowManager)
 const WINDOW_WIDTH = 400
@@ -24,7 +28,7 @@ const TOLERANCE = 50
 
 // Get preset position from main process (uses Electron screen API)
 async function getPresetPositionFromMain(preset: string): Promise<Position> {
-  const api = (window as any).electronAPI
+  const api = (window as unknown as { electronAPI?: PositionElectronAPI }).electronAPI
   if (api?.getPresetPosition) {
     return api.getPresetPosition(preset)
   }
@@ -33,11 +37,18 @@ async function getPresetPositionFromMain(preset: string): Promise<Position> {
 }
 
 async function getPresetNameFromMain(position: Position): Promise<PresetValue> {
-  const api = (window as any).electronAPI
+  const api = (window as unknown as { electronAPI?: PositionElectronAPI }).electronAPI
   if (api?.getPresetName) {
     const preset = await api.getPresetName(position)
-    if (PRESET_POSITIONS.some((p) => p.value === preset)) {
-      return preset
+    if (preset === 'custom') return preset
+    const knownPreset = PRESET_POSITIONS.find((p) => p.value === preset)
+    if (knownPreset) {
+      if (position.x === -1 && position.y === -1) return knownPreset.value
+      const coordinates = await api.getPresetPosition(knownPreset.value)
+      return Math.abs(position.x - coordinates.x) < TOLERANCE &&
+        Math.abs(position.y - coordinates.y) < TOLERANCE
+        ? knownPreset.value
+        : 'custom'
     }
   }
   return detectCurrentPresetFallback(position)
@@ -92,35 +103,58 @@ function detectCurrentPresetFallback(position: Position): PresetValue {
     }
   }
 
-  return 'bottom-right'
+  return 'custom'
 }
 
 function PositionSetting({ position, onChange }: PositionSettingProps) {
   const [currentPreset, setCurrentPreset] = useState<PresetValue>('bottom-right')
+  const requestId = useRef(0)
+  const { x, y } = position
 
   useEffect(() => {
+    const currentRequest = ++requestId.current
     let isActive = true
-    getPresetNameFromMain(position).then((preset) => {
-      if (isActive) {
+    getPresetNameFromMain({ x, y }).then((preset) => {
+      if (isActive && requestId.current === currentRequest) {
         setCurrentPreset(preset)
       }
+    }).catch((error) => {
+      console.error('Failed to detect preset position:', error)
     })
     return () => {
       isActive = false
     }
-  }, [position.x, position.y])
+  }, [x, y])
 
   const handlePresetChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const value = e.target.value
-    // Get actual coordinates from main process (uses Electron screen API)
-    const newPosition = await getPresetPositionFromMain(value)
-    onChange(newPosition)
+    const value = e.target.value as PresetValue
+    const currentRequest = ++requestId.current
+    const previousPreset = currentPreset
+    setCurrentPreset(value)
+    try {
+      const newPosition = await getPresetPositionFromMain(value)
+      if (requestId.current === currentRequest) onChange(newPosition)
+    } catch (error) {
+      console.error('Failed to get preset position:', error)
+      if (requestId.current === currentRequest) {
+        setCurrentPreset(previousPreset)
+      }
+    }
   }
 
   const handleResetPosition = async () => {
-    // Reset to default (bottom-right)
-    const defaultPosition = await getPresetPositionFromMain('bottom-right')
-    onChange(defaultPosition)
+    const currentRequest = ++requestId.current
+    const previousPreset = currentPreset
+    setCurrentPreset('bottom-right')
+    try {
+      const defaultPosition = await getPresetPositionFromMain('bottom-right')
+      if (requestId.current === currentRequest) onChange(defaultPosition)
+    } catch (error) {
+      console.error('Failed to reset position:', error)
+      if (requestId.current === currentRequest) {
+        setCurrentPreset(previousPreset)
+      }
+    }
   }
 
   return (
@@ -137,6 +171,7 @@ function PositionSetting({ position, onChange }: PositionSettingProps) {
               {preset.label}
             </option>
           ))}
+          <option value="custom" disabled>Custom</option>
         </select>
         <button
           onClick={handleResetPosition}

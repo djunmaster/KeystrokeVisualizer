@@ -9,6 +9,7 @@ import { IPC_CHANNELS, KeyPressEvent } from '../renderer/shared/types';
 export class KeyListener {
   private windowManager: WindowManager;
   private isListening = false;
+  private pressedModifierKeys = new Set<number>();
 
   // Modifier key state tracking
   private modifierState = {
@@ -43,8 +44,14 @@ export class KeyListener {
     uIOhook.on('keydown', this.keyDownHandler);
     uIOhook.on('keyup', this.keyUpHandler);
 
-    uIOhook.start();
-    this.isListening = true;
+    try {
+      uIOhook.start();
+      this.isListening = true;
+    } catch (error) {
+      uIOhook.off('keydown', this.keyDownHandler);
+      uIOhook.off('keyup', this.keyUpHandler);
+      throw error;
+    }
   }
 
   /**
@@ -104,25 +111,37 @@ export class KeyListener {
    * Update modifier key state.
    */
   private updateModifierState(keyCode: number, isPressed: boolean): void {
+    if (!this.isModifierKey(keyCode)) return;
+
+    if (isPressed) {
+      this.pressedModifierKeys.add(keyCode);
+    } else {
+      this.pressedModifierKeys.delete(keyCode);
+    }
+
     switch (keyCode) {
       case UiohookKey.Ctrl:
       case UiohookKey.CtrlRight:
-        this.modifierState.ctrl = isPressed;
+        this.modifierState.ctrl = this.pressedModifierKeys.has(UiohookKey.Ctrl) ||
+          this.pressedModifierKeys.has(UiohookKey.CtrlRight);
         break;
 
       case UiohookKey.Shift:
       case UiohookKey.ShiftRight:
-        this.modifierState.shift = isPressed;
+        this.modifierState.shift = this.pressedModifierKeys.has(UiohookKey.Shift) ||
+          this.pressedModifierKeys.has(UiohookKey.ShiftRight);
         break;
 
       case UiohookKey.Alt:
       case UiohookKey.AltRight:
-        this.modifierState.alt = isPressed;
+        this.modifierState.alt = this.pressedModifierKeys.has(UiohookKey.Alt) ||
+          this.pressedModifierKeys.has(UiohookKey.AltRight);
         break;
 
       case UiohookKey.Meta:
       case UiohookKey.MetaRight:
-        this.modifierState.meta = isPressed;
+        this.modifierState.meta = this.pressedModifierKeys.has(UiohookKey.Meta) ||
+          this.pressedModifierKeys.has(UiohookKey.MetaRight);
         break;
     }
   }
@@ -207,28 +226,14 @@ export class KeyListener {
    * Get key display name from key code.
    */
   private getKeyDisplayName(keyCode: number): string {
-    const name = this.keyNameMap.get(keyCode);
-    if (name) {
-      return name;
-    }
-
-    // Log unknown key codes for debugging
-    console.log(`Unknown key code: ${keyCode}`);
-
-    // Try to find the key name from UiohookKey enum
-    for (const [key, value] of Object.entries(UiohookKey)) {
-      if (value === keyCode && typeof key === 'string') {
-        return key;
-      }
-    }
-
-    return `Key${keyCode}`;
+    return this.keyNameMap.get(keyCode) ?? `Key${keyCode}`;
   }
 
   /**
    * Reset all modifier states.
    */
   private resetModifierState(): void {
+    this.pressedModifierKeys.clear();
     this.modifierState = {
       ctrl: false,
       shift: false,
@@ -242,6 +247,10 @@ export class KeyListener {
    * Maps uiohook key codes to display names.
    */
   private initializeKeyNameMap(): void {
+    for (const [name, keyCode] of Object.entries(UiohookKey)) {
+      this.keyNameMap.set(keyCode, name);
+    }
+
     // Letters A-Z (uiohook key codes are NOT sequential, must map individually)
     this.keyNameMap.set(UiohookKey.A, 'A');
     this.keyNameMap.set(UiohookKey.B, 'B');
