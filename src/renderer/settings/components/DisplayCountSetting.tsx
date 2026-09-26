@@ -1,9 +1,11 @@
 interface DisplayCountSettingProps {
   maxDisplayCount: number
   onChange: (count: number) => void
+  label: string
+  description: string
 }
 
-function DisplayCountSetting({ maxDisplayCount, onChange }: DisplayCountSettingProps) {
+function DisplayCountSetting({ maxDisplayCount, onChange, label, description }: DisplayCountSettingProps) {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = parseInt(e.target.value, 10)
     if (!isNaN(value) && value >= 1 && value <= 12) {
@@ -14,8 +16,8 @@ function DisplayCountSetting({ maxDisplayCount, onChange }: DisplayCountSettingP
   return (
     <div className="flex items-center justify-between py-3 border-b">
       <div className="flex flex-col">
-        <span className="text-gray-600">Max Display Blocks</span>
-        <span className="text-xs text-gray-400">Number of keystrokes shown at once</span>
+        <span className="text-gray-600">{label}</span>
+        <span className="text-xs text-gray-400">{description}</span>
       </div>
       <div className="flex items-center gap-3">
         <input

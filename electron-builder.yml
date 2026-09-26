@@ -1,6 +1,7 @@
 appId: com.keystroke-visualizer.app
 productName: Keystroke Visualizer
-copyright: Copyright 2025
+copyright: Copyright 2026 djunmaster
+icon: resources/icons/icon.png
 
 directories:
   output: release
@@ -9,6 +10,7 @@ directories:
 files:
   - dist/**/*
   - package.json
+  - LICENSE
 
 extraResources:
   - from: resources/tray-icons
@@ -26,7 +28,7 @@ win:
   target:
     - nsis
     - portable
-  signAndEditExecutable: false
+  signAndEditExecutable: true
 
 nsis:
   oneClick: false

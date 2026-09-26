@@ -5,6 +5,21 @@ import { WindowManager } from './WindowManager';
 import { ConfigStore } from './ConfigStore';
 import { IPC_CHANNELS } from '../renderer/shared/types';
 
+const labels = {
+  'zh-CN': {
+    appName: '按键可视化工具',
+    enableDisplay: '显示按键',
+    openSettings: '打开设置',
+    quit: '退出',
+  },
+  'en-US': {
+    appName: 'Keystroke Visualizer',
+    enableDisplay: 'Enable Display',
+    openSettings: 'Open Settings',
+    quit: 'Quit',
+  },
+} as const;
+
 /**
  * Tray icon manager.
  * Manages system tray icon and context menu.
@@ -29,7 +44,7 @@ export class TrayManager {
     const icon = this.getTrayIcon();
     this.tray = new Tray(icon);
 
-    this.tray.setToolTip('Keystroke Visualizer');
+    this.tray.setToolTip(labels[this.configStore.get('language')].appName);
 
     // Double-click to open settings (Windows only)
     if (process.platform === 'win32') {
@@ -44,9 +59,12 @@ export class TrayManager {
     // Listen for config changes to update menu
     if (!this.subscribedToConfig) {
       this.configStore.onDidChange((newConfig, oldConfig) => {
-        if (oldConfig?.isEnabled === newConfig.isEnabled) return;
+        const enabledChanged = oldConfig?.isEnabled !== newConfig.isEnabled;
+        const languageChanged = oldConfig?.language !== newConfig.language;
+        if (!enabledChanged && !languageChanged) return;
+        if (languageChanged) this.tray?.setToolTip(labels[newConfig.language].appName);
         this.updateContextMenu();
-        this.updateIcon(newConfig.isEnabled);
+        if (enabledChanged) this.updateIcon(newConfig.isEnabled);
       });
       this.subscribedToConfig = true;
     }
@@ -59,10 +77,11 @@ export class TrayManager {
     if (!this.tray) return;
 
     const isEnabled = this.configStore.get('isEnabled');
+    const t = labels[this.configStore.get('language')];
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: 'Enable Display',
+        label: t.enableDisplay,
         type: 'checkbox',
         checked: isEnabled,
         click: () => {
@@ -80,7 +99,7 @@ export class TrayManager {
         type: 'separator',
       },
       {
-        label: 'Open Settings',
+        label: t.openSettings,
         click: () => {
           this.windowManager.showSettings();
         },
@@ -89,7 +108,7 @@ export class TrayManager {
         type: 'separator',
       },
       {
-        label: 'Quit',
+        label: t.quit,
         click: () => {
           this.windowManager.setQuitting(true);
           app.quit();

@@ -1,12 +1,11 @@
-// Simple script to generate PNG icons using pure Node.js
-// Creates minimal valid PNG files for electron-builder
+// Generate PNG icons without image dependencies.
 
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
 // Create a simple PNG with a solid color
-function createPNG(width, height, r, g, b, a = 255) {
+function encodePNG(width, height, getPixel) {
   // PNG signature
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -28,6 +27,7 @@ function createPNG(width, height, r, g, b, a = 255) {
     rawData[y * (width * 4 + 1)] = 0; // filter byte
     for (let x = 0; x < width; x++) {
       const offset = y * (width * 4 + 1) + 1 + x * 4;
+      const [r, g, b, a] = getPixel(x, y);
       rawData[offset] = r;
       rawData[offset + 1] = g;
       rawData[offset + 2] = b;
@@ -42,6 +42,41 @@ function createPNG(width, height, r, g, b, a = 255) {
   const iendChunk = createChunk('IEND', Buffer.alloc(0));
 
   return Buffer.concat([signature, ihdrChunk, idatChunk, iendChunk]);
+}
+
+function createPNG(width, height, r, g, b, a = 255) {
+  return encodePNG(width, height, () => [r, g, b, a]);
+}
+
+function insideRoundedRect(x, y, left, top, right, bottom, radius) {
+  if (x < left || x >= right || y < top || y >= bottom) return false;
+  const nearestX = Math.max(left + radius, Math.min(x, right - radius));
+  const nearestY = Math.max(top + radius, Math.min(y, bottom - radius));
+  return (x - nearestX) ** 2 + (y - nearestY) ** 2 <= radius ** 2;
+}
+
+function nearLine(x, y, x1, y1, x2, y2, halfWidth) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const t = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy)));
+  return (x - x1 - t * dx) ** 2 + (y - y1 - t * dy) ** 2 <= halfWidth ** 2;
+}
+
+function createAppIcon() {
+  const ink = [28, 43, 49, 255];
+  const keycap = [239, 247, 243, 255];
+  const accent = [232, 91, 70, 255];
+  return encodePNG(512, 512, (x, y) => {
+    if (!insideRoundedRect(x, y, 16, 16, 496, 496, 96)) return [0, 0, 0, 0];
+    if (insideRoundedRect(x, y, 332, 352, 444, 440, 28)) return accent;
+    if (insideRoundedRect(x, y, 88, 88, 424, 424, 72)) {
+      if (nearLine(x, y, 182, 168, 182, 344, 22) ||
+          nearLine(x, y, 190, 268, 308, 170, 22) ||
+          nearLine(x, y, 190, 268, 312, 354, 22)) return ink;
+      return keycap;
+    }
+    return ink;
+  });
 }
 
 function createChunk(type, data) {
@@ -85,14 +120,17 @@ const iconsDir = path.join(__dirname, '..', 'resources', 'icons');
 const trayIconsDir = path.join(__dirname, '..', 'resources', 'tray-icons');
 
 // Ensure directories exist
+if (!fs.existsSync(iconsDir)) {
+  fs.mkdirSync(iconsDir, { recursive: true });
+}
 if (!fs.existsSync(trayIconsDir)) {
   fs.mkdirSync(trayIconsDir, { recursive: true });
 }
 
-// App icon (256x256) - blue - this is required by electron-builder
-const appIcon = createPNG(256, 256, 74, 144, 226);
+// App icon used by electron-builder on supported platforms.
+const appIcon = createAppIcon();
 fs.writeFileSync(path.join(iconsDir, 'icon.png'), appIcon);
-console.log('Created icon.png (256x256)');
+console.log('Created icon.png (512x512)');
 
 // Tray icons (16x16) - these are for runtime use only
 const trayOn = createPNG(16, 16, 76, 175, 80); // green

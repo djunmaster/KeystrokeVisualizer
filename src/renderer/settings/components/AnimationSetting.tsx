@@ -1,9 +1,10 @@
 interface AnimationSettingProps {
   fadeOutDuration: number
   onChange: (duration: number) => void
+  label: string
 }
 
-function AnimationSetting({ fadeOutDuration, onChange }: AnimationSettingProps) {
+function AnimationSetting({ fadeOutDuration, onChange, label }: AnimationSettingProps) {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onChange(Number(e.target.value))
   }
@@ -11,7 +12,7 @@ function AnimationSetting({ fadeOutDuration, onChange }: AnimationSettingProps) 
   return (
     <div className="py-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-gray-600">Fade Out Duration</span>
+        <span className="text-gray-600">{label}</span>
         <span className="text-gray-500 text-sm">{fadeOutDuration}ms</span>
       </div>
       <div className="flex items-center gap-3">

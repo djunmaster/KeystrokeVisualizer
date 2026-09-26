@@ -34,6 +34,9 @@ export class ConfigStore {
       repaired.maxDisplayCount = DEFAULT_CONFIG.maxDisplayCount;
     }
     if (!isPosition(persisted.position)) repaired.position = DEFAULT_CONFIG.position;
+    if (persisted.language !== 'zh-CN' && persisted.language !== 'en-US') {
+      repaired.language = DEFAULT_CONFIG.language;
+    }
     if (Object.keys(repaired).length > 0) this.store.set(repaired);
   }
 

@@ -26,4 +26,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPresetName: (position: { x: number; y: number }) => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_PRESET_NAME, position);
   },
+
+  getPositionPreview: (position: { x: number; y: number }, maxDisplayCount: number) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_POSITION_PREVIEW, position, maxDisplayCount);
+  },
 });

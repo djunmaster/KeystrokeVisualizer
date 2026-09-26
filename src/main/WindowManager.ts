@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
 import { join } from 'path';
-import { ConfigState, IPC_CHANNELS } from '../renderer/shared/types';
+import { ConfigState, IPC_CHANNELS, Position, PositionPreview } from '../renderer/shared/types';
 import { ConfigStore } from './ConfigStore';
 
 /**
@@ -99,11 +99,15 @@ export class WindowManager {
     }
 
     this.settingsWindow = new BrowserWindow({
-      width: 480,
-      height: 520,
-      resizable: false,
+      width: 520,
+      height: 680,
+      minWidth: 480,
+      minHeight: 520,
+      resizable: true,
       center: true,
-      title: 'Keystroke Visualizer - Settings',
+      title: this.configStore.get('language') === 'zh-CN'
+        ? '按键可视化工具 - 设置'
+        : 'Keystroke Visualizer - Settings',
       webPreferences: {
         preload: join(__dirname, '../preload/settings.js'),
         contextIsolation: true,
@@ -333,6 +337,16 @@ export class WindowManager {
   getPresetPosition(preset: string): { x: number; y: number } {
     const display = this.getActiveDisplay();
     return this.getPresetPositionOnDisplay(preset, display);
+  }
+
+  getPositionPreview(position: Position, maxDisplayCount: number): PositionPreview {
+    const resolved = this.calculateOverlayPosition(position, maxDisplayCount);
+    const display = screen.getDisplayNearestPoint(resolved);
+    return {
+      workArea: { ...display.workArea },
+      overlaySize: this.getOverlayDimensions(maxDisplayCount),
+      position: resolved,
+    };
   }
 
   /**

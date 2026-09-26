@@ -1,10 +1,18 @@
 {
   "name": "keystroke-visualizer",
   "version": "1.0.0",
-  "description": "Keystroke Visualizer - Desktop app for real-time keyboard input display",
+  "description": "Desktop app for real-time keyboard and mouse input display",
   "main": "dist/main/index.js",
-  "author": "Your Name",
+  "author": "djunmaster",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/djunmaster/KeystrokeVisualizer.git"
+  },
+  "homepage": "https://github.com/djunmaster/KeystrokeVisualizer",
+  "bugs": {
+    "url": "https://github.com/djunmaster/KeystrokeVisualizer/issues"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

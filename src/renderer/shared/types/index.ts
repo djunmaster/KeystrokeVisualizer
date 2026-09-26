@@ -7,11 +7,18 @@ export interface ConfigState {
   fadeOutDuration: number;
   autoStart: boolean;
   maxDisplayCount: number; // Maximum number of key display blocks
+  language: 'zh-CN' | 'en-US';
 }
 
 export interface Position {
   x: number;
   y: number;
+}
+
+export interface PositionPreview {
+  workArea: { x: number; y: number; width: number; height: number };
+  overlaySize: { width: number; height: number };
+  position: Position;
 }
 
 // Key press event
@@ -45,6 +52,7 @@ export const IPC_CHANNELS = {
   UPDATE_POSITION: 'update-position',
   GET_PRESET_POSITION: 'get-preset-position',
   GET_PRESET_NAME: 'get-preset-name',
+  GET_POSITION_PREVIEW: 'get-position-preview',
 
   // Window control
   TOGGLE_ENABLED: 'toggle-enabled',
@@ -69,4 +77,5 @@ export const DEFAULT_CONFIG: ConfigState = {
   fadeOutDuration: 1000,
   autoStart: false,
   maxDisplayCount: 6, // Default to 6 display blocks
+  language: 'zh-CN',
 };

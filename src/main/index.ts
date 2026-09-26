@@ -37,7 +37,7 @@ function initializeModules(): void {
   trayManager = new TrayManager(windowManager, configStore);
 
   // 4. KeyListener (depends on WindowManager)
-  keyListener = new KeyListener(windowManager);
+  keyListener = new KeyListener(windowManager, configStore);
 
   // 5. Setup IPC handlers
   setupIPCHandlers(configStore, windowManager);

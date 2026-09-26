@@ -1,6 +1,25 @@
-import { uIOhook, UiohookKey, UiohookKeyboardEvent } from 'uiohook-napi';
+import { uIOhook, UiohookKey, UiohookKeyboardEvent, UiohookMouseEvent, UiohookWheelEvent, WheelDirection } from 'uiohook-napi';
 import { WindowManager } from './WindowManager';
-import { IPC_CHANNELS, KeyPressEvent } from '../renderer/shared/types';
+import { ConfigStore } from './ConfigStore';
+import { ConfigState, IPC_CHANNELS, KeyPressEvent } from '../renderer/shared/types';
+
+const WHEEL_DISPLAY_INTERVAL_MS = 100;
+
+const mouseLabels = {
+  'zh-CN': { up: '滚轮向上', down: '滚轮向下', left: '滚轮向左', right: '滚轮向右', middle: '鼠标中键' },
+  'en-US': { up: 'Wheel Up', down: 'Wheel Down', left: 'Wheel Left', right: 'Wheel Right', middle: 'Middle Click' },
+} as const;
+
+const volumeKeyCodes = {
+  mute: 0xE020,
+  down: 0xE02E,
+  up: 0xE030,
+} as const;
+
+const volumeLabels: Record<ConfigState['language'], Record<number, string>> = {
+  'zh-CN': { [volumeKeyCodes.mute]: '静音', [volumeKeyCodes.down]: '音量减小', [volumeKeyCodes.up]: '音量增大' },
+  'en-US': { [volumeKeyCodes.mute]: 'Mute', [volumeKeyCodes.down]: 'Volume Down', [volumeKeyCodes.up]: 'Volume Up' },
+};
 
 /**
  * Keyboard listener using uiohook-napi.
@@ -8,8 +27,11 @@ import { IPC_CHANNELS, KeyPressEvent } from '../renderer/shared/types';
  */
 export class KeyListener {
   private windowManager: WindowManager;
+  private language: ConfigState['language'];
   private isListening = false;
   private pressedModifierKeys = new Set<number>();
+  private lastWheelLabel = '';
+  private lastWheelTime = 0;
 
   // Modifier key state tracking
   private modifierState = {
@@ -25,14 +47,22 @@ export class KeyListener {
   // Event handler references for cleanup
   private keyDownHandler: (event: UiohookKeyboardEvent) => void;
   private keyUpHandler: (event: UiohookKeyboardEvent) => void;
+  private wheelHandler: (event: UiohookWheelEvent) => void;
+  private mouseDownHandler: (event: UiohookMouseEvent) => void;
 
-  constructor(windowManager: WindowManager) {
+  constructor(windowManager: WindowManager, configStore: ConfigStore) {
     this.windowManager = windowManager;
+    this.language = configStore.get('language');
+    configStore.onDidChange((newConfig) => {
+      this.language = newConfig.language;
+    });
     this.initializeKeyNameMap();
 
     // Bind handlers once
     this.keyDownHandler = this.handleKeyDown.bind(this);
     this.keyUpHandler = this.handleKeyUp.bind(this);
+    this.wheelHandler = this.handleWheel.bind(this);
+    this.mouseDownHandler = this.handleMouseDown.bind(this);
   }
 
   /**
@@ -43,6 +73,8 @@ export class KeyListener {
 
     uIOhook.on('keydown', this.keyDownHandler);
     uIOhook.on('keyup', this.keyUpHandler);
+    uIOhook.on('wheel', this.wheelHandler);
+    uIOhook.on('mousedown', this.mouseDownHandler);
 
     try {
       uIOhook.start();
@@ -50,6 +82,8 @@ export class KeyListener {
     } catch (error) {
       uIOhook.off('keydown', this.keyDownHandler);
       uIOhook.off('keyup', this.keyUpHandler);
+      uIOhook.off('wheel', this.wheelHandler);
+      uIOhook.off('mousedown', this.mouseDownHandler);
       throw error;
     }
   }
@@ -63,12 +97,16 @@ export class KeyListener {
     // Remove event listeners
     uIOhook.off('keydown', this.keyDownHandler);
     uIOhook.off('keyup', this.keyUpHandler);
+    uIOhook.off('wheel', this.wheelHandler);
+    uIOhook.off('mousedown', this.mouseDownHandler);
 
     uIOhook.stop();
     this.isListening = false;
 
     // Reset modifier state
     this.resetModifierState();
+    this.lastWheelLabel = '';
+    this.lastWheelTime = 0;
   }
 
   /**
@@ -88,12 +126,47 @@ export class KeyListener {
     // Get display keys (modifiers + current key)
     const displayKeys = this.getDisplayKeys(keyCode);
 
-    // Send to Overlay window
-    const keyEvent: KeyPressEvent = {
-      keys: displayKeys,
-      timestamp: Date.now(),
-    };
+    this.sendKeys(displayKeys);
+  }
 
+  private handleWheel(event: UiohookWheelEvent): void {
+    if (event.rotation === 0) return;
+
+    const labels = mouseLabels[this.language];
+    const label = event.direction === WheelDirection.VERTICAL
+      ? (event.rotation < 0 ? labels.up : labels.down)
+      : event.direction === WheelDirection.HORIZONTAL
+        ? (event.rotation < 0 ? labels.left : labels.right)
+        : null;
+    if (!label) return;
+
+    const now = Date.now();
+    const keys = this.getMouseDisplayKeys(event, label);
+    const signature = keys.join('+');
+    if (signature === this.lastWheelLabel && now - this.lastWheelTime < WHEEL_DISPLAY_INTERVAL_MS) return;
+    this.lastWheelLabel = signature;
+    this.lastWheelTime = now;
+    this.sendKeys(keys);
+  }
+
+  private handleMouseDown(event: UiohookMouseEvent): void {
+    if (event.button !== 3) return;
+    const label = mouseLabels[this.language].middle;
+    this.sendKeys(this.getMouseDisplayKeys(event, label));
+  }
+
+  private getMouseDisplayKeys(event: UiohookMouseEvent | UiohookWheelEvent, label: string): string[] {
+    const keys: string[] = [];
+    if (event.ctrlKey) keys.push(this.getModifierDisplayName('ctrl'));
+    if (event.altKey) keys.push(this.getModifierDisplayName('alt'));
+    if (event.shiftKey) keys.push(this.getModifierDisplayName('shift'));
+    if (event.metaKey) keys.push(this.getModifierDisplayName('meta'));
+    keys.push(label);
+    return keys;
+  }
+
+  private sendKeys(keys: string[]): void {
+    const keyEvent: KeyPressEvent = { keys, timestamp: Date.now() };
     this.windowManager.sendToOverlay(IPC_CHANNELS.KEY_PRESSED, keyEvent);
   }
 
@@ -226,6 +299,8 @@ export class KeyListener {
    * Get key display name from key code.
    */
   private getKeyDisplayName(keyCode: number): string {
+    const volumeLabel = volumeLabels[this.language][keyCode];
+    if (volumeLabel) return volumeLabel;
     return this.keyNameMap.get(keyCode) ?? `Key${keyCode}`;
   }
 

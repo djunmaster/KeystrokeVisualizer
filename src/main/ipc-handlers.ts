@@ -33,6 +33,12 @@ function parseConfigUpdate(input: unknown): Partial<ConfigState> {
         }
         update.maxDisplayCount = value as number;
         break;
+      case 'language':
+        if (value !== 'zh-CN' && value !== 'en-US') {
+          throw new TypeError('language must be zh-CN or en-US');
+        }
+        update.language = value;
+        break;
       case 'position': {
         if (!value || typeof value !== 'object' || Array.isArray(value)) {
           throw new TypeError('position must contain integer x and y coordinates');
@@ -79,6 +85,7 @@ export function setupIPCHandlers(configStore: ConfigStore, windowManager: Window
     if (requested.autoStart !== undefined && requested.autoStart !== previous.autoStart) changed.autoStart = requested.autoStart;
     if (requested.fadeOutDuration !== undefined && requested.fadeOutDuration !== previous.fadeOutDuration) changed.fadeOutDuration = requested.fadeOutDuration;
     if (requested.maxDisplayCount !== undefined && requested.maxDisplayCount !== previous.maxDisplayCount) changed.maxDisplayCount = requested.maxDisplayCount;
+    if (requested.language !== undefined && requested.language !== previous.language) changed.language = requested.language;
     if (requested.position && (requested.position.x !== previous.position.x || requested.position.y !== previous.position.y)) {
       changed.position = requested.position;
     }
@@ -128,6 +135,16 @@ export function setupIPCHandlers(configStore: ConfigStore, windowManager: Window
   // Get current preset name for a given position
   ipcMain.handle(IPC_CHANNELS.GET_PRESET_NAME, (_, position: { x: number; y: number }): string => {
     return windowManager.detectPresetFromPosition(position);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_POSITION_PREVIEW, (_, position: { x: number; y: number }, maxDisplayCount: number) => {
+    if (!position || !Number.isSafeInteger(position.x) || !Number.isSafeInteger(position.y)) {
+      throw new TypeError('position must contain integer x and y coordinates');
+    }
+    if (!Number.isInteger(maxDisplayCount) || maxDisplayCount < MIN_DISPLAY_COUNT || maxDisplayCount > MAX_DISPLAY_COUNT) {
+      throw new RangeError('maxDisplayCount must be an integer between 1 and 12');
+    }
+    return windowManager.getPositionPreview(position, maxDisplayCount);
   });
 
   // ==================== Window Control ====================
