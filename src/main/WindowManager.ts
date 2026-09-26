@@ -76,7 +76,7 @@ export class WindowManager {
     }
 
     // Enable mouse pass-through by default
-    this.overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    this.setOverlayMousePassThrough(true);
 
     // Load Overlay page
     if (process.env.NODE_ENV === 'development') {
@@ -227,6 +227,8 @@ export class WindowManager {
   setOverlayMousePassThrough(enabled: boolean): void {
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
       this.overlayWindow.setIgnoreMouseEvents(enabled, { forward: true });
+      // Keep the transparent overlay above other windows when pass-through changes.
+      this.overlayWindow.setAlwaysOnTop(true, 'screen-saver');
     }
   }
 
