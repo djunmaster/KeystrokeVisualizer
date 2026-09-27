@@ -4,7 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-// Create a simple PNG with a solid color
 function encodePNG(width, height, getPixel) {
   // PNG signature
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -44,10 +43,6 @@ function encodePNG(width, height, getPixel) {
   return Buffer.concat([signature, ihdrChunk, idatChunk, iendChunk]);
 }
 
-function createPNG(width, height, r, g, b, a = 255) {
-  return encodePNG(width, height, () => [r, g, b, a]);
-}
-
 function insideRoundedRect(x, y, left, top, right, bottom, radius) {
   if (x < left || x >= right || y < top || y >= bottom) return false;
   const nearestX = Math.max(left + radius, Math.min(x, right - radius));
@@ -62,20 +57,54 @@ function nearLine(x, y, x1, y1, x2, y2, halfWidth) {
   return (x - x1 - t * dx) ** 2 + (y - y1 - t * dy) ** 2 <= halfWidth ** 2;
 }
 
-function createAppIcon() {
+function getLogoPixel(x, y) {
   const ink = [28, 43, 49, 255];
   const keycap = [239, 247, 243, 255];
   const accent = [232, 91, 70, 255];
-  return encodePNG(512, 512, (x, y) => {
-    if (!insideRoundedRect(x, y, 16, 16, 496, 496, 96)) return [0, 0, 0, 0];
-    if (insideRoundedRect(x, y, 332, 352, 444, 440, 28)) return accent;
-    if (insideRoundedRect(x, y, 88, 88, 424, 424, 72)) {
-      if (nearLine(x, y, 182, 168, 182, 344, 22) ||
-          nearLine(x, y, 190, 268, 308, 170, 22) ||
-          nearLine(x, y, 190, 268, 312, 354, 22)) return ink;
-      return keycap;
+  if (!insideRoundedRect(x, y, 16, 16, 496, 496, 96)) return [0, 0, 0, 0];
+  if (insideRoundedRect(x, y, 332, 352, 444, 440, 28)) return accent;
+  if (insideRoundedRect(x, y, 88, 88, 424, 424, 72)) {
+    if (nearLine(x, y, 182, 168, 182, 344, 22) ||
+        nearLine(x, y, 190, 268, 308, 170, 22) ||
+        nearLine(x, y, 190, 268, 312, 354, 22)) return ink;
+    return keycap;
+  }
+  return ink;
+}
+
+function createAppIcon() {
+  return encodePNG(512, 512, getLogoPixel);
+}
+
+function createTrayIcon(size, isEnabled, template = false) {
+  const samples = 4;
+  return encodePNG(size, size, (x, y) => {
+    const color = [0, 0, 0];
+    let alpha = 0;
+    // Supersample the shared logo so small tray icons retain smooth strokes and transparent edges.
+    for (let sy = 0; sy < samples; sy++) {
+      for (let sx = 0; sx < samples; sx++) {
+        const pixel = getLogoPixel(
+          (x + (sx + 0.5) / samples) * 512 / size,
+          (y + (sy + 0.5) / samples) * 512 / size
+        );
+        if (template) {
+          // Template images use alpha only; cut out the keycap so the K remains visible after tinting.
+          pixel[3] = pixel[0] === 239 ? 0 : pixel[3];
+          pixel[0] = pixel[1] = pixel[2] = 0;
+          if (!isEnabled) pixel[3] = Math.round(pixel[3] * 0.55);
+        }
+        for (let channel = 0; channel < 3; channel++) color[channel] += pixel[channel] * pixel[3];
+        alpha += pixel[3];
+      }
     }
-    return ink;
+    if (alpha === 0) return [0, 0, 0, 0];
+    const rgb = color.map((value) => Math.round(value / alpha));
+    if (!isEnabled && !template) {
+      const gray = Math.round(rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722);
+      rgb.fill(gray);
+    }
+    return [...rgb, Math.round(alpha / (samples * samples))];
   });
 }
 
@@ -132,23 +161,23 @@ const appIcon = createAppIcon();
 fs.writeFileSync(path.join(iconsDir, 'icon.png'), appIcon);
 console.log('Created icon.png (512x512)');
 
-// Tray icons (16x16) - these are for runtime use only
-const trayOn = createPNG(16, 16, 76, 175, 80); // green
+// Windows and Linux scale the 32px logo to the system tray's current DPI.
+const trayOn = createTrayIcon(32, true);
 fs.writeFileSync(path.join(trayIconsDir, 'tray-on.png'), trayOn);
-console.log('Created tray-on.png (16x16)');
+console.log('Created tray-on.png (32x32)');
 
-const trayOff = createPNG(16, 16, 158, 158, 158); // gray
+const trayOff = createTrayIcon(32, false);
 fs.writeFileSync(path.join(trayIconsDir, 'tray-off.png'), trayOff);
-console.log('Created tray-off.png (16x16)');
+console.log('Created tray-off.png (32x32)');
 
 // macOS template icons (16x16)
-fs.writeFileSync(path.join(trayIconsDir, 'tray-onTemplate.png'), trayOn);
-fs.writeFileSync(path.join(trayIconsDir, 'tray-offTemplate.png'), trayOff);
+fs.writeFileSync(path.join(trayIconsDir, 'tray-onTemplate.png'), createTrayIcon(16, true, true));
+fs.writeFileSync(path.join(trayIconsDir, 'tray-offTemplate.png'), createTrayIcon(16, false, true));
 console.log('Created macOS template icons');
 
 // Create 2x versions for macOS (32x32)
-const trayOn2x = createPNG(32, 32, 76, 175, 80);
-const trayOff2x = createPNG(32, 32, 158, 158, 158);
+const trayOn2x = createTrayIcon(32, true, true);
+const trayOff2x = createTrayIcon(32, false, true);
 fs.writeFileSync(path.join(trayIconsDir, 'tray-onTemplate@2x.png'), trayOn2x);
 fs.writeFileSync(path.join(trayIconsDir, 'tray-offTemplate@2x.png'), trayOff2x);
 console.log('Created macOS 2x template icons');

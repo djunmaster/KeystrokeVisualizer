@@ -1,6 +1,41 @@
-# Keystroke Visualizer
+<p align="center">
+  <img src="resources/icons/icon.png" alt="Keystroke Visualizer 应用 logo" width="112" height="112">
+</p>
 
-实时显示键盘按键与鼠标操作的桌面工具。
+<h1 align="center">Keystroke Visualizer</h1>
+
+<p align="center">
+  <strong>实时显示键盘按键与鼠标操作的桌面工具</strong>
+</p>
+
+<p align="center">
+  将组合键、鼠标滚轮和长按状态实时呈现在桌面浮层中。<br>
+  适用于录屏教程、课堂演示和游戏操作展示，支持固定键盘面板、主题与自定义样式。
+</p>
+
+<p align="center">
+  <a href="https://github.com/djunmaster/KeystrokeVisualizer/releases/latest">
+    <img src="https://img.shields.io/github/v/release/djunmaster/KeystrokeVisualizer?label=version&amp;style=flat-square&amp;color=2563eb" alt="最新发布版本">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/github/license/djunmaster/KeystrokeVisualizer?style=flat-square" alt="MIT 许可证">
+  </a>
+  <a href="#下载与安装">
+    <img src="https://img.shields.io/badge/Windows-x64-0078d4?style=flat-square" alt="Windows x64">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/djunmaster/KeystrokeVisualizer/releases/latest">下载最新版</a>
+  &nbsp;·&nbsp;
+  <a href="#实际效果">实际效果</a>
+  &nbsp;·&nbsp;
+  <a href="#功能特性">功能特性</a>
+  &nbsp;·&nbsp;
+  <a href="#开发">开发指南</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/djunmaster/KeystrokeVisualizer/issues">反馈问题</a>
+</p>
 
 ## 实际效果
 

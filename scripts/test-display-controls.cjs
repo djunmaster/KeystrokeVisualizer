@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const zlib = require('node:zlib');
 const { test } = require('node:test');
 const ts = require('typescript');
 
@@ -169,7 +170,9 @@ test('tray pause only changes pause state and all visibility remains centrally m
     setImage() {}
   }
   const { TrayManager } = load('src/main/TrayManager.ts', {
-    electron: { app: { quit() {} }, Tray: MockTray, Menu: { buildFromTemplate: (items) => items }, nativeImage: { createFromBuffer: () => ({}), createFromPath: () => ({}) } },
+    electron: { app: { quit() {} }, Tray: MockTray, Menu: { buildFromTemplate: (items) => items }, nativeImage: {
+      createFromPath: () => ({ isEmpty: () => false, resize() { return this; } }),
+    } },
     fs: { existsSync: () => false }, '../renderer/shared/types': shared,
   });
   const store = createStore({ isEnabled: true });
@@ -193,6 +196,93 @@ test('tray pause only changes pause state and all visibility remains centrally m
   pause().click();
   assert.equal(store.get('isPaused'), false);
   assert.equal(broadcasts, 3);
+});
+
+function readTrayPixels(name) {
+  const png = fs.readFileSync(path.join(root, 'resources/tray-icons', name));
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  assert.equal(png[24], 8);
+  assert.equal(png[25], 6);
+  const chunks = [];
+  for (let offset = 8; offset < png.length;) {
+    const length = png.readUInt32BE(offset);
+    if (png.toString('ascii', offset + 4, offset + 8) === 'IDAT') {
+      chunks.push(png.subarray(offset + 8, offset + 8 + length));
+    }
+    offset += length + 12;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(chunks));
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const row = y * (width * 4 + 1);
+    assert.equal(raw[row], 0, 'generated icons use unfiltered PNG rows');
+    raw.copy(pixels, y * width * 4, row + 1, row + 1 + width * 4);
+  }
+  return { width, height, pixels };
+}
+
+test('tray assets contain the transparent logo with a grayscale inactive variant', () => {
+  const active = readTrayPixels('tray-on.png');
+  const inactive = readTrayPixels('tray-off.png');
+  assert.equal(active.width, 32, 'use enough detail for high DPI tray rendering');
+  assert.equal(active.height, 32);
+  assert.equal(inactive.width, active.width);
+  assert.equal(inactive.height, active.height);
+  assert.equal(active.pixels[3], 0, 'the logo corner must be transparent');
+  const colors = new Set();
+  for (let i = 0; i < active.pixels.length; i += 4) {
+    assert.equal(active.pixels[i + 3], inactive.pixels[i + 3], 'state changes retain the logo silhouette');
+    assert.equal(inactive.pixels[i], inactive.pixels[i + 1]);
+    assert.equal(inactive.pixels[i + 1], inactive.pixels[i + 2]);
+    if (active.pixels[i + 3]) colors.add(active.pixels.subarray(i, i + 3).toString('hex'));
+  }
+  assert.ok(colors.size > 3, 'the icon must contain logo details and antialiased edges');
+});
+
+test('macOS tray templates use transparent monochrome logo details at both scales', () => {
+  for (const scale of [1, 2]) {
+    const suffix = scale === 2 ? '@2x' : '';
+    const active = readTrayPixels(`tray-onTemplate${suffix}.png`);
+    const inactive = readTrayPixels(`tray-offTemplate${suffix}.png`);
+    assert.equal(active.width, 16 * scale);
+    assert.equal(active.height, 16 * scale);
+    let visible = 0;
+    let dimmed = 0;
+    for (let i = 0; i < active.pixels.length; i += 4) {
+      assert.equal(active.pixels[i], 0);
+      assert.equal(active.pixels[i + 1], 0);
+      assert.equal(active.pixels[i + 2], 0);
+      if (active.pixels[i + 3]) visible++;
+      if (active.pixels[i + 3] > inactive.pixels[i + 3]) dimmed++;
+    }
+    assert.ok(visible > 0 && visible < active.width * active.height);
+    assert.ok(dimmed > 0);
+  }
+});
+
+test('missing or unreadable tray assets fall back to the packaged application logo', () => {
+  for (const missing of [true, false]) {
+    const loaded = [];
+    const logo = { isEmpty: () => false, resize() { return this; } };
+    let actual;
+    const { TrayManager } = load('src/main/TrayManager.ts', {
+      electron: {
+        Tray: class { constructor(icon) { actual = icon; } on() {} setToolTip() {} setContextMenu() {} },
+        Menu: { buildFromTemplate: (items) => items },
+        nativeImage: {
+          createFromPath(file) {
+            loaded.push(file);
+            return file === path.join(root, 'resources/icons/icon.png') ? logo : { isEmpty: () => true };
+          },
+        },
+      },
+      fs: { existsSync: () => !missing }, '../renderer/shared/types': shared,
+    });
+    new TrayManager({}, createStore()).create();
+    assert.equal(actual, logo);
+    assert.equal(loaded.at(-1), path.join(root, 'resources/icons/icon.png'));
+  }
 });
 
 function deferred() {

@@ -141,7 +141,7 @@ export class TrayManager {
 
   /**
    * Get tray icon based on platform and state.
-   * Falls back to programmatically created icon if file not found.
+   * Falls back to the application logo if a tray asset is missing or unreadable.
    */
   private getTrayIcon(isEnabled?: boolean): NativeImage {
     const state = isEnabled ?? (this.configStore.get('isEnabled') && !this.configStore.get('isPaused'));
@@ -149,11 +149,11 @@ export class TrayManager {
 
     // Try to load icon from file
     if (existsSync(iconPath)) {
-      return nativeImage.createFromPath(iconPath);
+      const icon = nativeImage.createFromPath(iconPath);
+      if (!icon.isEmpty()) return icon;
     }
 
-    // Fallback: create a simple colored icon programmatically
-    return this.createFallbackIcon(state);
+    return this.createFallbackIcon();
   }
 
   /**
@@ -194,25 +194,11 @@ export class TrayManager {
   }
 
   /**
-   * Create a simple fallback icon programmatically.
+   * Use the same logo bundled with the application instead of a colored placeholder.
    */
-  private createFallbackIcon(isEnabled: boolean): NativeImage {
-    const size = 16;
-    const color = isEnabled ? { r: 76, g: 175, b: 80 } : { r: 158, g: 158, b: 158 };
-
-    // Create a simple colored square icon
-    const canvas = Buffer.alloc(size * size * 4);
-    for (let i = 0; i < size * size; i++) {
-      canvas[i * 4] = color.r;     // R
-      canvas[i * 4 + 1] = color.g; // G
-      canvas[i * 4 + 2] = color.b; // B
-      canvas[i * 4 + 3] = 255;     // A
-    }
-
-    return nativeImage.createFromBuffer(canvas, {
-      width: size,
-      height: size,
-    });
+  private createFallbackIcon(): NativeImage {
+    const logo = nativeImage.createFromPath(join(__dirname, '../../resources/icons/icon.png'));
+    return logo.isEmpty() ? logo : logo.resize({ width: 32, height: 32, quality: 'best' });
   }
 
   /**
