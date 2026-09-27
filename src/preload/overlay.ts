@@ -19,6 +19,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.KEY_PRESSED, handler);
   },
 
+  getKeyState: () => ipcRenderer.invoke(IPC_CHANNELS.GET_KEY_STATE),
+
+  onKeyStateChanged: (callback: (event: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, keyState: unknown) => callback(keyState);
+    ipcRenderer.on(IPC_CHANNELS.KEY_STATE_CHANGED, handler);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.KEY_STATE_CHANGED, handler);
+  },
+
   // Get current preset name for a position
   getPresetName: (position: { x: number; y: number }) => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_PRESET_NAME, position);

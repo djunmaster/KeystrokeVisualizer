@@ -1,7 +1,9 @@
 import { BrowserWindow, screen } from 'electron';
 import { join } from 'path';
-import { ConfigState, IPC_CHANNELS, Position, PositionPreview } from '../renderer/shared/types';
+import { ConfigState, DisplayInfo, IPC_CHANNELS, KEYBOARD_PANEL_HEIGHT, KEYBOARD_PANEL_WIDTH, Position, PositionPreview } from '../renderer/shared/types';
 import { ConfigStore } from './ConfigStore';
+
+const DISPLAY_CHANGE_DELAY_MS = 100;
 
 /**
  * Window lifecycle manager.
@@ -13,9 +15,23 @@ export class WindowManager {
   private configStore: ConfigStore;
   private isQuitting = false;
   private overlayMoveTimer: ReturnType<typeof setTimeout> | null = null;
+  private displayChangeTimer: ReturnType<typeof setTimeout> | null = null;
+  private displays: Electron.Display[];
+  private applyingPosition = false;
+  private readonly handleDisplaysChanged = () => {
+    if (this.displayChangeTimer) clearTimeout(this.displayChangeTimer);
+    this.displayChangeTimer = setTimeout(() => {
+      this.displayChangeTimer = null;
+      this.reconcileDisplays();
+    }, DISPLAY_CHANGE_DELAY_MS);
+  };
 
   constructor(configStore: ConfigStore) {
     this.configStore = configStore;
+    this.displays = screen.getAllDisplays();
+    screen.on('display-added', this.handleDisplaysChanged);
+    screen.on('display-removed', this.handleDisplaysChanged);
+    screen.on('display-metrics-changed', this.handleDisplaysChanged);
   }
 
   /**
@@ -23,13 +39,16 @@ export class WindowManager {
    */
   createOverlayWindow(config: ConfigState): BrowserWindow {
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-      this.overlayWindow.show();
+      if (config.isEnabled && !config.isPaused) this.overlayWindow.show();
+      else this.overlayWindow.hide();
       return this.overlayWindow;
     }
 
     // Calculate initial position
-    const { x, y } = this.calculateOverlayPosition(config.position, config.maxDisplayCount);
-    const { width, height } = this.getOverlayDimensions(config.maxDisplayCount);
+    const display = this.resolveDisplay(config.displayId, config.position);
+    const { x, y } = this.calculateOverlayPosition(config.position, config.maxDisplayCount, display.id, config.displayMode);
+    this.configStore.updateConfig({ displayId: display.id, position: { x, y } });
+    const { width, height } = this.getOverlayDimensions(config.maxDisplayCount, display, config.displayMode, config.keyboardScale);
 
     this.overlayWindow = new BrowserWindow({
       width,
@@ -41,7 +60,7 @@ export class WindowManager {
       alwaysOnTop: true,
       skipTaskbar: true,
       resizable: false,
-      show: config.isEnabled,
+      show: config.isEnabled && !config.isPaused,
       webPreferences: {
         preload: join(__dirname, '../preload/overlay.js'),
         contextIsolation: true,
@@ -50,14 +69,7 @@ export class WindowManager {
     });
 
     const overlayWindow = this.overlayWindow;
-    const saveOverlayPosition = () => {
-      if (overlayWindow.isDestroyed()) return;
-      const [nextX, nextY] = overlayWindow.getPosition();
-      const { x: savedX, y: savedY } = this.configStore.get('position');
-      if (nextX === savedX && nextY === savedY) return;
-      this.configStore.set('position', { x: nextX, y: nextY });
-      this.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, this.configStore.getConfig());
-    };
+    const saveOverlayPosition = () => this.saveOverlayPosition();
 
     if (process.platform === 'win32') {
       overlayWindow.on('moved', saveOverlayPosition);
@@ -187,22 +199,53 @@ export class WindowManager {
   updateOverlayPosition(x: number, y: number): void {
     const validated = this.validatePosition(x, y, this.configStore.get('maxDisplayCount'));
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-      this.overlayWindow.setPosition(validated.x, validated.y);
+      this.applyingPosition = true;
+      try {
+        this.overlayWindow.setBounds({ ...validated, ...this.getOverlayDimensions() });
+      } finally {
+        this.applyingPosition = false;
+      }
     }
+  }
+
+  saveOverlayPosition(): void {
+    const window = this.overlayWindow;
+    if (!window || window.isDestroyed() || this.applyingPosition || this.displayChangeTimer) return;
+    const selectedId = this.configStore.get('displayId');
+    const previousDisplay = this.displays.find((display) => display.id === selectedId);
+    const selectedDisplay = screen.getAllDisplays().find((display) => display.id === selectedId);
+    const geometryChanged = previousDisplay && selectedDisplay && (
+      previousDisplay.scaleFactor !== selectedDisplay.scaleFactor ||
+      (['x', 'y', 'width', 'height'] as const).some((key) => previousDisplay.workArea[key] !== selectedDisplay.workArea[key])
+    );
+    // Native moves can arrive before the display-change notification on Windows.
+    if (selectedId !== null && (!selectedDisplay || geometryChanged)) {
+      this.handleDisplaysChanged();
+      return;
+    }
+    const [x, y] = window.getPosition();
+    const saved = this.configStore.get('position');
+    const display = this.getDisplayForWindow(window);
+    if (x === saved.x && y === saved.y && display.id === this.configStore.get('displayId')) return;
+    const position = this.validatePosition(x, y, undefined, display.id);
+    this.configStore.updateConfig({ position, displayId: display.id });
+    this.updateOverlayPosition(position.x, position.y);
+    this.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, this.configStore.getConfig());
   }
 
   /**
    * Update Overlay window size based on max display count.
    * Keeps the window anchored near its current top/bottom position.
    */
-  updateOverlaySize(maxDisplayCount: number): void {
+  updateOverlaySize(maxDisplayCount: number, displayMode = this.configStore.get('displayMode'),
+    keyboardScale = this.configStore.get('keyboardScale')): void {
     if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
 
-    const { width: newWidth, height: newHeight } = this.getOverlayDimensions(maxDisplayCount);
-    const [x, y] = this.overlayWindow.getPosition();
-    const [, oldHeight] = this.overlayWindow.getSize();
-    const display = this.getDisplayForWindow(this.overlayWindow);
-    const { y: areaY, height: areaHeight } = display.workArea;
+    const { width: newWidth, height: newHeight } = this.getOverlayDimensions(maxDisplayCount, this.getActiveDisplay(), displayMode, keyboardScale);
+    const { x, y } = this.configStore.get('position');
+    const [oldWidth, oldHeight] = this.overlayWindow.getSize();
+    const display = this.getActiveDisplay();
+    const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
 
     // Use window bottom edge proximity to determine anchor (more reliable than center)
     // If window bottom is near screen bottom (within 50px), anchor to bottom
@@ -210,15 +253,21 @@ export class WindowManager {
     const isNearBottom = windowBottom >= areaY + areaHeight - 50;
     const anchor = isNearBottom ? 'bottom' : 'top';
     const nextY = anchor === 'bottom' ? y + oldHeight - newHeight : y;
+    const nextX = x + oldWidth >= areaX + areaWidth - 50 ? x + oldWidth - newWidth : x;
 
-    const validated = this.validatePosition(x, nextY, maxDisplayCount);
+    const validated = this.validatePosition(nextX, nextY, maxDisplayCount, this.configStore.get('displayId'), displayMode, keyboardScale);
     // Persist before setBounds so its native move event does not trigger a second write.
     const saved = this.configStore.get('position');
     if (saved.x !== validated.x || saved.y !== validated.y) {
       this.configStore.set('position', validated);
     }
     // setBounds also applies shrink requests to the non-resizable overlay.
-    this.overlayWindow.setBounds({ ...validated, width: newWidth, height: newHeight });
+    this.applyingPosition = true;
+    try {
+      this.overlayWindow.setBounds({ ...validated, width: newWidth, height: newHeight });
+    } finally {
+      this.applyingPosition = false;
+    }
   }
 
   /**
@@ -284,19 +333,19 @@ export class WindowManager {
    * Clamps to screen bounds and filters invalid values.
    * Public so IPC handlers can validate before saving to config.
    */
-  validatePosition(x: number, y: number, maxDisplayCount?: number): { x: number; y: number } {
+  validatePosition(x: number, y: number, maxDisplayCount?: number, displayId = this.configStore.get('displayId'),
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): Position {
+    const display = this.resolveDisplay(displayId, { x, y });
     // Reject invalid values (NaN, Infinity, etc.)
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      return this.getDefaultPosition(maxDisplayCount);
+      return this.getDefaultPosition(maxDisplayCount, display, displayMode, keyboardScale);
     }
 
-    const display = screen.getDisplayNearestPoint({ x, y });
     const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
-    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount);
+    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale);
 
-    // Clamp to visible area (allow at least 50px of window visible)
-    const clampedX = Math.max(areaX - windowWidth + 50, Math.min(x, areaX + areaWidth - 50));
-    const clampedY = Math.max(areaY - windowHeight + 50, Math.min(y, areaY + areaHeight - 50));
+    const clampedX = Math.round(Math.max(areaX, Math.min(x, areaX + areaWidth - windowWidth)));
+    const clampedY = Math.round(Math.max(areaY, Math.min(y, areaY + areaHeight - windowHeight)));
 
     return { x: clampedX, y: clampedY };
   }
@@ -307,28 +356,30 @@ export class WindowManager {
    */
   private calculateOverlayPosition(
     position: { x: number; y: number },
-    maxDisplayCount?: number
+    maxDisplayCount?: number,
+    displayId = this.configStore.get('displayId'),
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')
   ): { x: number; y: number } {
     // Only (-1, -1) is the default-position sentinel; other negative coordinates
     // are valid on displays to the left or above the primary display.
     if (position.x !== -1 || position.y !== -1) {
-      return this.validatePosition(position.x, position.y, maxDisplayCount);
+      return this.validatePosition(position.x, position.y, maxDisplayCount, displayId, displayMode, keyboardScale);
     }
 
     // Default: bottom-right corner
-    return this.getDefaultPosition(maxDisplayCount);
+    return this.getDefaultPosition(maxDisplayCount, this.resolveDisplay(displayId, position), displayMode, keyboardScale);
   }
 
   /**
    * Get default window position (bottom-right corner).
    */
-  private getDefaultPosition(maxDisplayCount?: number): { x: number; y: number } {
-    const display = this.getActiveDisplay();
+  private getDefaultPosition(maxDisplayCount?: number, display = this.getActiveDisplay(),
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): Position {
     const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
-    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount);
+    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale);
     return {
-      x: areaX + areaWidth - (windowWidth + 20),
-      y: areaY + areaHeight - (windowHeight + 20),
+      x: Math.max(areaX, areaX + areaWidth - (windowWidth + 20)),
+      y: Math.max(areaY, areaY + areaHeight - (windowHeight + 20)),
     };
   }
 
@@ -336,17 +387,19 @@ export class WindowManager {
    * Calculate preset position coordinates.
    * Uses Electron's screen API for accurate multi-monitor support.
    */
-  getPresetPosition(preset: string): { x: number; y: number } {
-    const display = this.getActiveDisplay();
+  getPresetPosition(preset: string, displayId = this.configStore.get('displayId')): Position {
+    const display = this.resolveDisplay(displayId, this.configStore.get('position'));
     return this.getPresetPositionOnDisplay(preset, display);
   }
 
-  getPositionPreview(position: Position, maxDisplayCount: number): PositionPreview {
-    const resolved = this.calculateOverlayPosition(position, maxDisplayCount);
-    const display = screen.getDisplayNearestPoint(resolved);
+  getPositionPreview(position: Position, maxDisplayCount: number, displayId = this.configStore.get('displayId'),
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): PositionPreview {
+    const display = this.resolveDisplay(displayId, position);
+    const resolved = this.calculateOverlayPosition(position, maxDisplayCount, display.id, displayMode, keyboardScale);
     return {
+      displayId: display.id,
       workArea: { ...display.workArea },
-      overlaySize: this.getOverlayDimensions(maxDisplayCount),
+      overlaySize: this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale),
       position: resolved,
     };
   }
@@ -354,7 +407,7 @@ export class WindowManager {
   /**
    * Detect the closest preset for a given position.
    */
-  detectPresetFromPosition(position: { x: number; y: number }): string {
+  detectPresetFromPosition(position: Position, displayId = this.configStore.get('displayId')): string {
     if (
       (position.x === -1 && position.y === -1) ||
       !Number.isFinite(position.x) ||
@@ -363,7 +416,7 @@ export class WindowManager {
       return 'bottom-right';
     }
 
-    const display = screen.getDisplayNearestPoint({ x: position.x, y: position.y });
+    const display = this.resolveDisplay(displayId, position);
     const presets = [
       'bottom-right',
       'top-right',
@@ -388,9 +441,11 @@ export class WindowManager {
   }
 
   /**
-   * Pick the active display based on settings window, overlay position, or cursor.
+   * Prefer the selected display, then fall back to the current window or cursor.
    */
   private getActiveDisplay(): Electron.Display {
+    const selected = screen.getAllDisplays().find((display) => display.id === this.configStore.get('displayId'));
+    if (selected) return selected;
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
       return this.getDisplayForWindow(this.overlayWindow);
     }
@@ -404,12 +459,10 @@ export class WindowManager {
   }
 
   /**
-   * Get display for a given BrowserWindow by its center point.
+   * Use the largest window intersection when dragging between displays.
    */
   private getDisplayForWindow(window: BrowserWindow): Electron.Display {
-    const [x, y] = window.getPosition();
-    const [width, height] = window.getSize();
-    return screen.getDisplayNearestPoint({ x: x + width / 2, y: y + height / 2 });
+    return screen.getDisplayMatching(window.getBounds());
   }
 
   /**
@@ -418,7 +471,7 @@ export class WindowManager {
   private getPresetPositionOnDisplay(preset: string, display: Electron.Display): { x: number; y: number } {
     const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
     const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(
-      this.configStore.get('maxDisplayCount')
+      this.configStore.get('maxDisplayCount'), display
     );
     const MARGIN = 0;
 
@@ -439,27 +492,96 @@ export class WindowManager {
       case 'top-center':
         return { x: areaX + Math.round((areaWidth - windowWidth) / 2), y: areaY + MARGIN };
       default:
-        return this.getDefaultPosition(this.configStore.get('maxDisplayCount'));
+        return this.getDefaultPosition(this.configStore.get('maxDisplayCount'), display);
     }
   }
 
   /**
    * Compute overlay window dimensions based on max display count.
    */
-  private getOverlayDimensions(maxDisplayCount?: number): { width: number; height: number } {
-    const width = 400;
+  private getOverlayDimensions(maxDisplayCount?: number, display = this.getActiveDisplay(),
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): { width: number; height: number } {
+    const width = displayMode === 'keyboard' ? Math.round(KEYBOARD_PANEL_WIDTH * keyboardScale / 100) : KEYBOARD_PANEL_WIDTH;
     const count = Math.max(1, maxDisplayCount ?? this.configStore.get('maxDisplayCount') ?? 6);
     const itemHeight = 54; // Fits KeyItem with padding and text
     const gap = 8; // gap-2
     const padding = 16; // p-4
-    const height = padding * 2 + count * itemHeight + (count - 1) * gap;
-    return { width, height };
+    const height = displayMode === 'keyboard'
+      ? Math.round(KEYBOARD_PANEL_HEIGHT * keyboardScale / 100)
+      : padding * 2 + count * itemHeight + (count - 1) * gap;
+    return { width: Math.min(width, display.workArea.width), height: Math.min(height, display.workArea.height) };
+  }
+
+  getDisplays(): DisplayInfo[] {
+    const primaryId = screen.getPrimaryDisplay().id;
+    return screen.getAllDisplays().map((display) => ({
+      id: display.id,
+      label: display.label,
+      isPrimary: display.id === primaryId,
+      bounds: { ...display.bounds },
+      workArea: { ...display.workArea },
+      scaleFactor: display.scaleFactor,
+    }));
+  }
+
+  getPositionOnDisplay(displayId: number, position: Position, maxDisplayCount: number,
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): Position {
+    const target = screen.getAllDisplays().find((display) => display.id === displayId);
+    if (!target) throw new RangeError('Display is no longer available');
+    const config = this.configStore.getConfig();
+    const source = this.resolveDisplay(config.displayId, config.position);
+    return this.mapPositionToDisplay(position, source, target, config.maxDisplayCount, maxDisplayCount,
+      config.displayMode, displayMode, config.keyboardScale, keyboardScale);
+  }
+
+  private resolveDisplay(displayId: number | null, position: Position): Electron.Display {
+    if (displayId !== null) {
+      return screen.getAllDisplays().find((display) => display.id === displayId) ?? screen.getPrimaryDisplay();
+    }
+    if ((position.x === -1 && position.y === -1) || !Number.isFinite(position.x) || !Number.isFinite(position.y)) {
+      return screen.getPrimaryDisplay();
+    }
+    return screen.getDisplayNearestPoint(position);
+  }
+
+  private mapPositionToDisplay(position: Position, source: Electron.Display, target: Electron.Display,
+    previousCount: number, nextCount = previousCount, previousMode = this.configStore.get('displayMode'),
+    nextMode = previousMode, previousScale = this.configStore.get('keyboardScale'), nextScale = previousScale): Position {
+    if (position.x === -1 && position.y === -1) return this.getDefaultPosition(nextCount, target, nextMode, nextScale);
+    const oldSize = this.getOverlayDimensions(previousCount, source, previousMode, previousScale);
+    const newSize = this.getOverlayDimensions(nextCount, target, nextMode, nextScale);
+    const coordinate = (axis: 'x' | 'y', dimension: 'width' | 'height') => {
+      const oldRange = source.workArea[dimension] - oldSize[dimension];
+      const ratio = oldRange > 0 ? Math.max(0, Math.min(1, (position[axis] - source.workArea[axis]) / oldRange)) : 0;
+      return Math.round(target.workArea[axis] + ratio * (target.workArea[dimension] - newSize[dimension]));
+    };
+    return { x: coordinate('x', 'width'), y: coordinate('y', 'height') };
+  }
+
+  private reconcileDisplays(): void {
+    const config = this.configStore.getConfig();
+    const oldDisplay = this.displays.find((display) => display.id === config.displayId);
+    const nextDisplays = screen.getAllDisplays();
+    const target = nextDisplays.find((display) => display.id === config.displayId) ?? screen.getPrimaryDisplay();
+    const position = oldDisplay
+      ? this.mapPositionToDisplay(config.position, oldDisplay, target, config.maxDisplayCount)
+      : this.calculateOverlayPosition(config.position, config.maxDisplayCount, target.id);
+    this.displays = nextDisplays;
+    this.configStore.updateConfig({ displayId: target.id, position });
+    this.updateOverlayPosition(position.x, position.y);
+    this.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, this.configStore.getConfig());
+    this.sendToSettings(IPC_CHANNELS.DISPLAYS_CHANGED, this.getDisplays());
   }
 
   /**
    * Destroy all windows.
    */
   destroyAll(): void {
+    screen.off('display-added', this.handleDisplaysChanged);
+    screen.off('display-removed', this.handleDisplaysChanged);
+    screen.off('display-metrics-changed', this.handleDisplaysChanged);
+    if (this.displayChangeTimer) clearTimeout(this.displayChangeTimer);
+    this.displayChangeTimer = null;
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
       this.overlayWindow.destroy();
     }

@@ -9,12 +9,16 @@ const labels = {
   'zh-CN': {
     appName: '按键可视化工具',
     enableDisplay: '显示按键',
+    pauseDisplay: '暂停显示',
+    resumeDisplay: '恢复显示',
     openSettings: '打开设置',
     quit: '退出',
   },
   'en-US': {
     appName: 'Keystroke Visualizer',
     enableDisplay: 'Enable Display',
+    pauseDisplay: 'Pause Display',
+    resumeDisplay: 'Resume Display',
     openSettings: 'Open Settings',
     quit: 'Quit',
   },
@@ -60,11 +64,12 @@ export class TrayManager {
     if (!this.subscribedToConfig) {
       this.configStore.onDidChange((newConfig, oldConfig) => {
         const enabledChanged = oldConfig?.isEnabled !== newConfig.isEnabled;
+        const pausedChanged = oldConfig?.isPaused !== newConfig.isPaused;
         const languageChanged = oldConfig?.language !== newConfig.language;
-        if (!enabledChanged && !languageChanged) return;
+        if (!enabledChanged && !pausedChanged && !languageChanged) return;
         if (languageChanged) this.tray?.setToolTip(labels[newConfig.language].appName);
         this.updateContextMenu();
-        if (enabledChanged) this.updateIcon(newConfig.isEnabled);
+        if (enabledChanged || pausedChanged) this.updateIcon(newConfig.isEnabled && !newConfig.isPaused);
       });
       this.subscribedToConfig = true;
     }
@@ -77,6 +82,7 @@ export class TrayManager {
     if (!this.tray) return;
 
     const isEnabled = this.configStore.get('isEnabled');
+    const isPaused = this.configStore.get('isPaused');
     const t = labels[this.configStore.get('language')];
 
     const contextMenu = Menu.buildFromTemplate([
@@ -85,14 +91,18 @@ export class TrayManager {
         type: 'checkbox',
         checked: isEnabled,
         click: () => {
-          const newState = this.configStore.toggleEnabled();
+          this.configStore.toggleEnabled();
           // Broadcast config change to all windows
           this.windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, this.configStore.getConfig());
-          if (newState) {
-            this.windowManager.showOverlay();
-          } else {
-            this.windowManager.hideOverlay();
-          }
+        },
+      },
+      {
+        label: isPaused ? t.resumeDisplay : t.pauseDisplay,
+        enabled: isEnabled,
+        click: () => {
+          if (!this.configStore.get('isEnabled')) return;
+          this.configStore.set('isPaused', !this.configStore.get('isPaused'));
+          this.windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, this.configStore.getConfig());
         },
       },
       {
@@ -134,7 +144,7 @@ export class TrayManager {
    * Falls back to programmatically created icon if file not found.
    */
   private getTrayIcon(isEnabled?: boolean): NativeImage {
-    const state = isEnabled ?? this.configStore.get('isEnabled');
+    const state = isEnabled ?? (this.configStore.get('isEnabled') && !this.configStore.get('isPaused'));
     const iconPath = this.getTrayIconPath(state);
 
     // Try to load icon from file

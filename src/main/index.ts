@@ -1,13 +1,13 @@
 // Main Process Entry
 // Batch 6: Full main process integration
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, globalShortcut } from 'electron';
 import { ConfigStore } from './ConfigStore';
 import { WindowManager } from './WindowManager';
 import { TrayManager } from './TrayManager';
 import { KeyListener } from './KeyListener';
 import { setupIPCHandlers } from './ipc-handlers';
-import { IPC_CHANNELS } from '../renderer/shared/types';
+import { IPC_CHANNELS, PAUSE_ACCELERATOR } from '../renderer/shared/types';
 
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock();
@@ -22,6 +22,7 @@ let trayManager: TrayManager;
 let keyListener: KeyListener;
 let shouldStopKeyListener = true;
 let pendingKeyListenerStart: ReturnType<typeof setTimeout> | null = null;
+let pauseShortcutRegistered = false;
 
 /**
  * Initialize all modules
@@ -40,7 +41,10 @@ function initializeModules(): void {
   keyListener = new KeyListener(windowManager, configStore);
 
   // 5. Setup IPC handlers
-  setupIPCHandlers(configStore, windowManager);
+  setupIPCHandlers(configStore, windowManager, keyListener, () => ({
+    accelerator: PAUSE_ACCELERATOR,
+    registered: pauseShortcutRegistered,
+  }));
 }
 
 /**
@@ -55,8 +59,19 @@ function startApp(): void {
   // Create tray icon
   trayManager.create();
 
-  // Start keyboard listener only when enabled (defer to avoid startup stalls)
-  updateKeyListenerState(config.isEnabled);
+  try {
+    pauseShortcutRegistered = globalShortcut.register(PAUSE_ACCELERATOR, () => {
+      if (!configStore.get('isEnabled')) return;
+      configStore.set('isPaused', !configStore.get('isPaused'));
+      windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, configStore.getConfig());
+    });
+  } catch (error) {
+    console.warn('Failed to register pause shortcut:', error);
+  }
+  keyListener.setPauseShortcutRegistered(pauseShortcutRegistered);
+  if (!pauseShortcutRegistered) console.warn('Pause shortcut is unavailable:', PAUSE_ACCELERATOR);
+
+  updateDisplayState(config.isEnabled && !config.isPaused);
 
   // Apply current auto-start setting
   updateAutoStart(config.autoStart);
@@ -67,10 +82,19 @@ function startApp(): void {
     if (!oldConfig || newConfig.autoStart !== oldConfig.autoStart) {
       updateAutoStart(newConfig.autoStart);
     }
-    if (!oldConfig || newConfig.isEnabled !== oldConfig.isEnabled) {
-      updateKeyListenerState(newConfig.isEnabled);
+    if (!oldConfig || newConfig.isEnabled !== oldConfig.isEnabled || newConfig.isPaused !== oldConfig.isPaused) {
+      updateDisplayState(newConfig.isEnabled && !newConfig.isPaused);
     }
   });
+}
+
+function updateDisplayState(active: boolean): void {
+  updateKeyListenerState(active);
+  if (active) {
+    windowManager.showOverlay();
+  } else {
+    windowManager.hideOverlay();
+  }
 }
 
 /**
@@ -109,7 +133,11 @@ function updateKeyListenerState(enabled: boolean): void {
       }
     }, 0);
   } else {
-    keyListener.stop();
+    try {
+      keyListener.stop();
+    } catch (error) {
+      console.error('Failed to stop keyboard listener:', error);
+    }
   }
 }
 
@@ -117,6 +145,8 @@ function updateKeyListenerState(enabled: boolean): void {
  * Cleanup resources
  */
 function cleanup(): void {
+  globalShortcut.unregister(PAUSE_ACCELERATOR);
+  pauseShortcutRegistered = false;
   if (pendingKeyListenerStart !== null) {
     clearTimeout(pendingKeyListenerStart);
     pendingKeyListenerStart = null;
@@ -164,6 +194,10 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // Skip stopping key listener to avoid exit stalls
   shouldStopKeyListener = false;
+  if (pendingKeyListenerStart !== null) {
+    clearTimeout(pendingKeyListenerStart);
+    pendingKeyListenerStart = null;
+  }
   if (windowManager) {
     windowManager.setQuitting(true);
   }

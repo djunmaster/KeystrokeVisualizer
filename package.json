@@ -1,6 +1,6 @@
 {
   "name": "keystroke-visualizer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Desktop app for real-time keyboard and mouse input display",
   "main": "dist/main/index.js",
   "author": "djunmaster",
@@ -17,6 +17,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
+    "test": "node --test scripts/test-display-controls.cjs scripts/test-key-display.cjs scripts/test-key-listener.cjs scripts/test-main-controls.cjs",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"cross-env NODE_ENV=development electron .\"",
     "electron:build": "npm run build && electron-builder",
@@ -28,6 +29,7 @@
   },
   "dependencies": {
     "electron-store": "^8.1.0",
+    "electron-updater": "^6.8.9",
     "uiohook-napi": "^1.5.4"
   },
   "devDependencies": {

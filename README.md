@@ -4,7 +4,7 @@
 
 ## 实际效果
 
-以下截图与 GIF 均来自 Windows 上实际运行的应用。按键演示由真实输入事件触发，展示当前主分支构建的效果。
+以下截图与 GIF 均来自 Windows 上实际运行的应用。按键演示由真实输入事件触发；设置截图展示较早版本，v1.0.1 的设置已调整为四个页面。
 
 ### 组合键、滚轮与淡出动画
 
@@ -29,30 +29,89 @@
 
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/djunmaster/KeystrokeVisualizer/releases/tag/v1.0.0) 下载 Windows x64 版本：
+从 [GitHub Releases](https://github.com/djunmaster/KeystrokeVisualizer/releases/tag/v1.0.1) 下载 Windows x64 版本：
 
 | 文件 | 用途 |
 | --- | --- |
-| [Keystroke.Visualizer.Setup.1.0.0.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.0/Keystroke.Visualizer.Setup.1.0.0.exe) | 安装版，可选择安装目录并创建快捷方式 |
-| [Keystroke.Visualizer.1.0.0.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.0/Keystroke.Visualizer.1.0.0.exe) | 便携版，无需安装 |
+| [Keystroke.Visualizer.Setup.1.0.1.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.1/Keystroke.Visualizer.Setup.1.0.1.exe) | 安装版，支持后续应用内更新，可选择安装目录并创建快捷方式 |
+| [Keystroke.Visualizer.1.0.1.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.1/Keystroke.Visualizer.1.0.1.exe) | 便携版，无需安装，后续版本需手动下载 |
 
 首次运行后，应用会在系统托盘驻留。通过托盘菜单打开设置，可调整显示位置、动画、显示数量和界面语言。浮层可直接拖动；设置页也支持可视化编辑位置与实时预览。
 
 本次仅提供 Windows x64 安装包。安装包未进行代码签名，Windows 可能显示“未知发布者”提示。
 
-> 当前主分支已修复 Windows 上浮层可能被其他窗口遮挡的问题，此修复尚未包含在 v1.0.0 下载包中。若遇到“显示按键”已开启但看不到浮层，可按下方开发说明构建当前源码。
+> v1.0.1 已修复 Windows 上浮层可能被其他窗口遮挡的问题。v1.0.0 用户需手动下载并安装一次 v1.0.1，之后 Windows 安装版即可使用应用内更新。
 
 ## 功能特性
 
 - ⌨️ 实时按键显示（支持组合键）
+- 长按持续高亮，松开后淡出；连续重复按键合并为次数
+- 固定键盘面板：WASD / 方向键布局，包含 Shift、Space、Ctrl
+- 键盘面板大小可在 60%–160% 间按 10% 调整，并实时预览
+- 一键暂停与恢复：设置、托盘或全局快捷键
+- 六套内置主题，以及可命名保存的自定义按键 CSS 样式
+- Windows 安装版支持检查更新、下载进度与安装后重启
 - 🖱️ 滚轮方向与鼠标中键显示
 - 🔊 音量增大、减小与静音键显示
 - 🎯 可拖拽的显示位置
 - 🖥️ 设置内可视化编辑位置并实时预览
+- 🖥️ 自动检测多屏幕，支持切换目标屏幕并适配不同分辨率与缩放比例
 - ⏱️ 可调节的淡出动画
 - 🚀 开机自启动支持
 - 🌐 设置界面支持简体中文 / English 切换
 - 🖥️ 提供 Windows 安装版与便携版；源码包含 macOS / Linux 打包配置
+
+## 多屏幕使用
+
+1. 打开设置，在“位置 → 目标屏幕”中选择显示器。
+2. 在所选屏幕上选择位置预设，或拖动屏幕预览中的标记；X / Y 坐标会同步更新。
+3. 屏幕切换时保留浮层的相对位置。屏幕拔出后自动回到主屏；分辨率、旋转或缩放变化时，位置与预览自动更新。
+
+界面中的“逻辑分辨率”和 X / Y 使用系统逻辑坐标，缩放比例单独显示；它们可能与显示器的物理像素数不同。浮层保持在所选屏幕的工作区内，避开任务栏。小屏幕容纳不下设定的全部记录时，会优先显示最新记录。
+
+多屏幕功能从 v1.0.1 起包含在下载包中。
+
+## 按键显示与暂停
+
+在设置的“显示模式”中选择“按键记录”或“键盘面板”。记录模式下，按住的键保持高亮，松开后按设定时间淡出；800ms 内连续按下相同组合会合并为 `×N`，长按产生的系统重复事件也会合并。固定面板可选择 WASD 或方向键布局，按下、松开时实时更新高亮。
+
+设置分为“显示、位置、样式、应用”四页。“显示”页集中管理启用、暂停和显示模式，并只展示当前模式的设置。选择键盘面板后可调整布局和大小，比例从 60% 到 160%，每档 10%；预览随设置更新。“位置”页的屏幕预览与浮层窗口会使用同一比例，放大时会尽量保持原有的靠右、靠下位置。键盘面板比例不会改变按键记录模式的大小。
+
+启用显示后，点击设置或托盘中的“暂停显示”可隐藏浮层并停止输入监听。“恢复显示”会重新开始监听，不重放暂停期间的输入。Windows / Linux 快捷键为 `Ctrl+Shift+F9`，macOS 为 `Cmd+Shift+F9`。快捷键注册状态会显示在设置中；快捷键不可用时仍可使用按钮或托盘。暂停状态保存在配置中，重新启动应用后仍保持暂停。
+
+这些功能从 v1.0.1 起包含在下载包中。
+
+## 主题与自定义样式
+
+设置中的“按键样式”提供经典磨砂、纸白键帽、薄荷终端、霓虹电竞、高对比教学、极简描边六套主题，按键记录与固定键盘面板共用主题。
+
+选择基础主题后可以编辑 CSS，预览会实时显示草稿效果；填写名称并保存后，样式进入自定义列表，可再次选择、修改或另存。草稿不会自动覆盖已保存样式，CSS 出错时预览保留最后一次有效样式。保存后重启应用仍可使用；最多保存 20 套，每套 CSS 最长 16000 个字符。
+
+可用选择器：`.kv-key`（键帽）、`.kv-row`（按键记录行）、`.kv-panel`（键盘面板）、`.kv-plus`（组合键分隔符）、`.kv-count`（重复次数）。按键元素提供 `data-key`、`data-held` 和 `data-role` 属性，例如：
+
+```css
+.kv-key {
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.kv-key[data-held="true"] {
+  background: #69e0a5;
+  color: #102619;
+}
+
+.kv-key[data-key="Space"] {
+  border-color: #69e0a5;
+}
+```
+
+自定义 CSS 限定在按键显示区域内，支持普通规则、`@media` 与 `@supports`；不支持资源加载规则、`url()`、CSS 嵌套及全局动画定义。固定浮层的尺寸仍由显示模式和屏幕工作区确定，超出窗口的样式会裁剪；字体、边框和阴影可在预览中检查。
+
+## 应用内更新
+
+Windows 安装版会在启动约 15 秒后检查 GitHub Releases，此后每 6 小时检查一次；也可在“应用 → 版本更新”中手动检查。发现新版时会显示系统通知，设置页可查看版本、下载进度，并在下载完成后点击“安装并重启”。下载和安装不会自动打断正在使用的应用。开发版、便携版及当前未配置安装更新的其他平台会在设置中显示不可用原因。
+
+此功能从 v1.0.1 起提供；已发布的 v1.0.0 没有更新客户端，也缺少 `latest.yml`，因此需要手动安装一次 v1.0.1。以后发布 Windows 新版时，先递增 `package.json` 版本，再构建并将 `Keystroke.Visualizer.Setup.<version>.exe`、对应 `.blockmap` 和 `latest.yml` 上传到同一个 `v<version>` GitHub Release。`latest.yml` 与安装包的文件名和校验值必须保持一致；便携版文件可一起发布供手动下载。带 `GH_TOKEN` 的发布流程也可使用 `electron-builder --win --publish always` 上传这些文件。
 
 ## 技术栈
 
@@ -82,6 +141,15 @@ npm run electron:dev
 
 ```bash
 npm run build:win
+```
+
+### 开发验证
+
+```bash
+npm test
+npm run lint
+npm run typecheck
+npm run build
 ```
 
 ## 项目结构

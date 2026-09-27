@@ -1,5 +1,6 @@
 import Store from 'electron-store';
-import { ConfigState, DEFAULT_CONFIG, Position } from '../renderer/shared/types';
+import { ConfigState, DEFAULT_CONFIG, MAX_KEYBOARD_SCALE, MIN_KEYBOARD_SCALE, Position } from '../renderer/shared/types';
+import { isKeyThemeId, parseCustomStyles } from '../renderer/overlay/key-state';
 
 function isPosition(value: unknown): value is Position {
   return typeof value === 'object' && value !== null &&
@@ -24,6 +25,33 @@ export class ConfigStore {
     const persisted = this.store.store as unknown as Record<keyof ConfigState, unknown>;
     const repaired: Partial<ConfigState> = {};
     if (typeof persisted.isEnabled !== 'boolean') repaired.isEnabled = DEFAULT_CONFIG.isEnabled;
+    if (typeof persisted.isPaused !== 'boolean') repaired.isPaused = DEFAULT_CONFIG.isPaused;
+    if (persisted.displayMode !== 'history' && persisted.displayMode !== 'keyboard') {
+      repaired.displayMode = DEFAULT_CONFIG.displayMode;
+    }
+    if (persisted.keyboardLayout !== 'gaming' && persisted.keyboardLayout !== 'arrows') {
+      repaired.keyboardLayout = DEFAULT_CONFIG.keyboardLayout;
+    }
+    if (!Number.isInteger(persisted.keyboardScale) ||
+      (persisted.keyboardScale as number) < MIN_KEYBOARD_SCALE ||
+      (persisted.keyboardScale as number) > MAX_KEYBOARD_SCALE ||
+      (persisted.keyboardScale as number) % 10 !== 0) {
+      repaired.keyboardScale = DEFAULT_CONFIG.keyboardScale;
+    }
+    if (!isKeyThemeId(persisted.theme)) repaired.theme = DEFAULT_CONFIG.theme;
+    let customStyles: ConfigState['customStyles'];
+    try {
+      customStyles = parseCustomStyles(persisted.customStyles);
+    } catch {
+      customStyles = [];
+      repaired.customStyles = customStyles;
+    }
+    if (persisted.activeCustomStyleId !== null && (
+      typeof persisted.activeCustomStyleId !== 'string' ||
+      !customStyles.some((style) => style.id === persisted.activeCustomStyleId)
+    )) {
+      repaired.activeCustomStyleId = null;
+    }
     if (typeof persisted.autoStart !== 'boolean') repaired.autoStart = DEFAULT_CONFIG.autoStart;
     if (!Number.isInteger(persisted.fadeOutDuration) ||
       (persisted.fadeOutDuration as number) < 200 || (persisted.fadeOutDuration as number) > 3000) {
@@ -34,6 +62,9 @@ export class ConfigStore {
       repaired.maxDisplayCount = DEFAULT_CONFIG.maxDisplayCount;
     }
     if (!isPosition(persisted.position)) repaired.position = DEFAULT_CONFIG.position;
+    if (persisted.displayId !== null && !Number.isSafeInteger(persisted.displayId)) {
+      repaired.displayId = DEFAULT_CONFIG.displayId;
+    }
     if (persisted.language !== 'zh-CN' && persisted.language !== 'en-US') {
       repaired.language = DEFAULT_CONFIG.language;
     }
@@ -56,6 +87,15 @@ export class ConfigStore {
     const changed = Object.fromEntries(
       Object.entries(partialConfig).filter(([key, value]) => {
         const previous = current[key as keyof ConfigState];
+        if (key === 'customStyles') {
+          const nextStyles = value as ConfigState['customStyles'];
+          const previousStyles = previous as ConfigState['customStyles'];
+          return nextStyles.length !== previousStyles.length || nextStyles.some((style, index) => {
+            const saved = previousStyles[index];
+            return style.id !== saved.id || style.name !== saved.name ||
+              style.baseTheme !== saved.baseTheme || style.css !== saved.css;
+          });
+        }
         return key === 'position' && value && previous
           ? (value as ConfigState['position']).x !== (previous as ConfigState['position']).x ||
               (value as ConfigState['position']).y !== (previous as ConfigState['position']).y

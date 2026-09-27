@@ -1,7 +1,7 @@
 import { uIOhook, UiohookKey, UiohookKeyboardEvent, UiohookMouseEvent, UiohookWheelEvent, WheelDirection } from 'uiohook-napi';
 import { WindowManager } from './WindowManager';
 import { ConfigStore } from './ConfigStore';
-import { ConfigState, IPC_CHANNELS, KeyPressEvent } from '../renderer/shared/types';
+import { ConfigState, IPC_CHANNELS, KeyPressEvent, KeyStateEvent } from '../renderer/shared/types';
 
 const WHEEL_DISPLAY_INTERVAL_MS = 100;
 
@@ -29,7 +29,8 @@ export class KeyListener {
   private windowManager: WindowManager;
   private language: ConfigState['language'];
   private isListening = false;
-  private pressedModifierKeys = new Set<number>();
+  private pauseShortcutRegistered = false;
+  private pressedKeys = new Set<number>();
   private lastWheelLabel = '';
   private lastWheelTime = 0;
 
@@ -100,13 +101,27 @@ export class KeyListener {
     uIOhook.off('wheel', this.wheelHandler);
     uIOhook.off('mousedown', this.mouseDownHandler);
 
-    uIOhook.stop();
     this.isListening = false;
+    try {
+      uIOhook.stop();
+    } finally {
+      this.resetKeyState();
+      this.lastWheelLabel = '';
+      this.lastWheelTime = 0;
+      this.sendKeyState();
+    }
+  }
 
-    // Reset modifier state
-    this.resetModifierState();
-    this.lastWheelLabel = '';
-    this.lastWheelTime = 0;
+  getKeyState(): KeyStateEvent {
+    return { keyCodes: [...this.pressedKeys], timestamp: Date.now() };
+  }
+
+  setPauseShortcutRegistered(registered: boolean): void {
+    this.pauseShortcutRegistered = registered;
+  }
+
+  private sendKeyState(): void {
+    this.windowManager.sendToOverlay(IPC_CHANNELS.KEY_STATE_CHANGED, this.getKeyState());
   }
 
   /**
@@ -114,9 +129,11 @@ export class KeyListener {
    */
   private handleKeyDown(event: UiohookKeyboardEvent): void {
     const keyCode = event.keycode;
+    const repeat = this.pressedKeys.has(keyCode);
+    this.pressedKeys.add(keyCode);
 
-    // Update modifier state
-    this.updateModifierState(keyCode, true);
+    this.updateModifierState(keyCode);
+    if (!repeat) this.sendKeyState();
 
     // Don't send event if only modifier key is pressed (no main key)
     if (this.isModifierKey(keyCode)) {
@@ -124,9 +141,10 @@ export class KeyListener {
     }
 
     // Get display keys (modifiers + current key)
-    const displayKeys = this.getDisplayKeys(keyCode);
+    const displayKeys = this.getDisplayKeys(keyCode, event);
+    if (this.isPauseShortcut(keyCode, event)) return;
 
-    this.sendKeys(displayKeys);
+    this.sendKeys(displayKeys, { keyCode, repeat });
   }
 
   private handleWheel(event: UiohookWheelEvent): void {
@@ -165,8 +183,8 @@ export class KeyListener {
     return keys;
   }
 
-  private sendKeys(keys: string[]): void {
-    const keyEvent: KeyPressEvent = { keys, timestamp: Date.now() };
+  private sendKeys(keys: string[], keyboard?: Pick<KeyPressEvent, 'keyCode' | 'repeat'>): void {
+    const keyEvent: KeyPressEvent = { keys, timestamp: Date.now(), ...keyboard };
     this.windowManager.sendToOverlay(IPC_CHANNELS.KEY_PRESSED, keyEvent);
   }
 
@@ -175,46 +193,40 @@ export class KeyListener {
    */
   private handleKeyUp(event: UiohookKeyboardEvent): void {
     const keyCode = event.keycode;
-
-    // Update modifier state
-    this.updateModifierState(keyCode, false);
+    if (!this.pressedKeys.delete(keyCode)) return;
+    this.updateModifierState(keyCode);
+    this.sendKeyState();
   }
 
   /**
    * Update modifier key state.
    */
-  private updateModifierState(keyCode: number, isPressed: boolean): void {
+  private updateModifierState(keyCode: number): void {
     if (!this.isModifierKey(keyCode)) return;
-
-    if (isPressed) {
-      this.pressedModifierKeys.add(keyCode);
-    } else {
-      this.pressedModifierKeys.delete(keyCode);
-    }
 
     switch (keyCode) {
       case UiohookKey.Ctrl:
       case UiohookKey.CtrlRight:
-        this.modifierState.ctrl = this.pressedModifierKeys.has(UiohookKey.Ctrl) ||
-          this.pressedModifierKeys.has(UiohookKey.CtrlRight);
+        this.modifierState.ctrl = this.pressedKeys.has(UiohookKey.Ctrl) ||
+          this.pressedKeys.has(UiohookKey.CtrlRight);
         break;
 
       case UiohookKey.Shift:
       case UiohookKey.ShiftRight:
-        this.modifierState.shift = this.pressedModifierKeys.has(UiohookKey.Shift) ||
-          this.pressedModifierKeys.has(UiohookKey.ShiftRight);
+        this.modifierState.shift = this.pressedKeys.has(UiohookKey.Shift) ||
+          this.pressedKeys.has(UiohookKey.ShiftRight);
         break;
 
       case UiohookKey.Alt:
       case UiohookKey.AltRight:
-        this.modifierState.alt = this.pressedModifierKeys.has(UiohookKey.Alt) ||
-          this.pressedModifierKeys.has(UiohookKey.AltRight);
+        this.modifierState.alt = this.pressedKeys.has(UiohookKey.Alt) ||
+          this.pressedKeys.has(UiohookKey.AltRight);
         break;
 
       case UiohookKey.Meta:
       case UiohookKey.MetaRight:
-        this.modifierState.meta = this.pressedModifierKeys.has(UiohookKey.Meta) ||
-          this.pressedModifierKeys.has(UiohookKey.MetaRight);
+        this.modifierState.meta = this.pressedKeys.has(UiohookKey.Meta) ||
+          this.pressedKeys.has(UiohookKey.MetaRight);
         break;
     }
   }
@@ -222,20 +234,21 @@ export class KeyListener {
   /**
    * Get display keys including active modifiers.
    */
-  private getDisplayKeys(keyCode: number): string[] {
+  private getDisplayKeys(keyCode: number, event: UiohookKeyboardEvent): string[] {
     const keys: string[] = [];
+    const modifiers = this.getKeyboardModifiers(event);
 
     // Add active modifiers in order
-    if (this.modifierState.ctrl) {
+    if (modifiers.ctrl) {
       keys.push(this.getModifierDisplayName('ctrl'));
     }
-    if (this.modifierState.alt) {
+    if (modifiers.alt) {
       keys.push(this.getModifierDisplayName('alt'));
     }
-    if (this.modifierState.shift) {
+    if (modifiers.shift) {
       keys.push(this.getModifierDisplayName('shift'));
     }
-    if (this.modifierState.meta) {
+    if (modifiers.meta) {
       keys.push(this.getModifierDisplayName('meta'));
     }
 
@@ -246,6 +259,22 @@ export class KeyListener {
     }
 
     return keys.length > 0 ? keys : ['Unknown'];
+  }
+
+  private getKeyboardModifiers(event: UiohookKeyboardEvent): typeof this.modifierState {
+    // Native flags also cover modifiers held before the hook was started.
+    return {
+      ctrl: event.ctrlKey ?? this.modifierState.ctrl,
+      alt: event.altKey ?? this.modifierState.alt,
+      shift: event.shiftKey ?? this.modifierState.shift,
+      meta: event.metaKey ?? this.modifierState.meta,
+    };
+  }
+
+  private isPauseShortcut(keyCode: number, event: UiohookKeyboardEvent): boolean {
+    if (!this.pauseShortcutRegistered || keyCode !== UiohookKey.F9) return false;
+    const { ctrl, alt, shift, meta } = this.getKeyboardModifiers(event);
+    return shift && !alt && (process.platform === 'darwin' ? meta && !ctrl : ctrl && !meta);
   }
 
   /**
@@ -305,10 +334,10 @@ export class KeyListener {
   }
 
   /**
-   * Reset all modifier states.
+   * Reset physical keys and modifier states.
    */
-  private resetModifierState(): void {
-    this.pressedModifierKeys.clear();
+  private resetKeyState(): void {
+    this.pressedKeys.clear();
     this.modifierState = {
       ctrl: false,
       shift: false,

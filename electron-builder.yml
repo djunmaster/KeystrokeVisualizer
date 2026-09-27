@@ -3,6 +3,11 @@ productName: Keystroke Visualizer
 copyright: Copyright 2026 djunmaster
 icon: resources/icons/icon.png
 
+publish:
+  provider: github
+  owner: djunmaster
+  repo: KeystrokeVisualizer
+
 directories:
   output: release
   buildResources: build
@@ -31,10 +36,14 @@ win:
   signAndEditExecutable: true
 
 nsis:
+  artifactName: Keystroke.Visualizer.Setup.${version}.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+
+portable:
+  artifactName: Keystroke.Visualizer.${version}.${ext}
 
 linux:
   category: Utility

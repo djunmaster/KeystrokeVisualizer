@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import KeyDisplay from './components/KeyDisplay';
 import DragHandle from './components/DragHandle';
-import { ConfigState, KeyPressEvent } from '../shared/types';
+import { ConfigState, KeyPressEvent, KeyStateEvent } from '../shared/types';
+import { getActiveKeyStyle, getThemeCss } from './key-state';
 
 declare global {
   interface Window {
@@ -9,6 +10,8 @@ declare global {
       getConfig: () => Promise<ConfigState>;
       onConfigChanged: (callback: (config: ConfigState) => void) => () => void;
       onKeyPressed: (callback: (event: KeyPressEvent) => void) => () => void;
+      getKeyState: () => Promise<KeyStateEvent>;
+      onKeyStateChanged: (callback: (event: KeyStateEvent) => void) => () => void;
       savePosition: () => Promise<void>;
       setMousePassThrough: (enabled: boolean) => Promise<void>;
       getPresetName: (position: { x: number; y: number }) => Promise<string>;
@@ -36,6 +39,12 @@ function App() {
   const [preset, setPreset] = useState<'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'bottom-center' | 'top-center'>('bottom-right');
   const positionX = config?.position.x;
   const positionY = config?.position.y;
+  const displayId = config?.displayId;
+  const { theme: activeTheme, css: activeCss } = getActiveKeyStyle({
+    theme: config?.theme ?? 'classic', customStyles: config?.customStyles ?? [],
+    activeCustomStyleId: config?.activeCustomStyleId ?? null,
+  });
+  const themeCss = useMemo(() => getThemeCss(activeTheme, 'kv-overlay', activeCss), [activeTheme, activeCss]);
 
   useEffect(() => {
     let isActive = true;
@@ -72,9 +81,9 @@ function App() {
     return () => {
       isActive = false;
     };
-  }, [positionX, positionY]);
+  }, [positionX, positionY, displayId]);
 
-  if (!config || !config.isEnabled) {
+  if (!config || !config.isEnabled || config.isPaused) {
     return null;
   }
 
@@ -82,8 +91,13 @@ function App() {
   const alignX = preset.includes('left') ? 'left' : preset.includes('center') ? 'center' : 'right';
 
   return (
-    <div className="relative w-full h-full">
+    <div data-style-scope="kv-overlay" className="relative w-full h-full" style={{ contain: 'layout paint', isolation: 'isolate' }}>
+      <style>{themeCss}</style>
       <KeyDisplay
+        key={`${config.displayMode}:${config.keyboardLayout}`}
+        displayMode={config.displayMode}
+        keyboardLayout={config.keyboardLayout}
+        keyboardScale={config.keyboardScale}
         fadeOutDuration={config.fadeOutDuration}
         maxDisplayCount={config.maxDisplayCount}
         stackFrom={stackFrom}

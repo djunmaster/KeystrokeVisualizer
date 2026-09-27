@@ -1,12 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
-import { Position, PositionPreview } from '../../shared/types'
+import { ConfigState, DisplayInfo, KEYBOARD_PANEL_HEIGHT, KEYBOARD_PANEL_WIDTH, Position, PositionPreview } from '../../shared/types'
 
 interface PositionSettingProps {
   position: Position
+  displayId: number | null
   maxDisplayCount: number
+  displayMode: ConfigState['displayMode']
+  keyboardScale: number
   onChange: (position: Position) => void
+  onDisplayChange: (displayId: number) => void
   labels: {
     title: string
+    display: string
+    screen: string
+    primary: string
+    scale: string
+    resolution: string
+    displaysError: string
     reset: string
     custom: string
     preview: string
@@ -25,9 +35,12 @@ const PRESET_POSITIONS = [
 ] as const
 type PresetValue = (typeof PRESET_POSITIONS)[number]['value'] | 'custom'
 interface PositionElectronAPI {
-  getPresetPosition: (preset: string) => Promise<Position>
-  getPresetName: (position: Position) => Promise<string>
-  getPositionPreview?: (position: Position, maxDisplayCount: number) => Promise<PositionPreview>
+  getPresetPosition: (preset: string, displayId?: number) => Promise<Position>
+  getPresetName: (position: Position, displayId?: number) => Promise<string>
+  getPositionPreview?: (position: Position, maxDisplayCount: number, displayId?: number,
+    displayMode?: ConfigState['displayMode'], keyboardScale?: number) => Promise<PositionPreview>
+  getDisplays?: () => Promise<DisplayInfo[]>
+  onDisplaysChanged?: (callback: (displays: DisplayInfo[]) => void) => () => void
 }
 
 // Window size constants (must match WindowManager)
@@ -40,24 +53,24 @@ const PREVIEW_MAX_HEIGHT = 180
 const LIVE_POSITION_INTERVAL_MS = 100
 
 // Get preset position from main process (uses Electron screen API)
-async function getPresetPositionFromMain(preset: string): Promise<Position> {
+async function getPresetPositionFromMain(preset: string, displayId?: number): Promise<Position> {
   const api = (window as unknown as { electronAPI?: PositionElectronAPI }).electronAPI
   if (api?.getPresetPosition) {
-    return api.getPresetPosition(preset)
+    return api.getPresetPosition(preset, displayId)
   }
   // Fallback for development without electron
   return calculatePresetPositionFallback(preset)
 }
 
-async function getPresetNameFromMain(position: Position): Promise<PresetValue> {
+async function getPresetNameFromMain(position: Position, displayId?: number): Promise<PresetValue> {
   const api = (window as unknown as { electronAPI?: PositionElectronAPI }).electronAPI
   if (api?.getPresetName) {
-    const preset = await api.getPresetName(position)
+    const preset = await api.getPresetName(position, displayId)
     if (preset === 'custom') return preset
     const knownPreset = PRESET_POSITIONS.find((p) => p.value === preset)
     if (knownPreset) {
       if (position.x === -1 && position.y === -1) return knownPreset.value
-      const coordinates = await api.getPresetPosition(knownPreset.value)
+      const coordinates = await api.getPresetPosition(knownPreset.value, displayId)
       return Math.abs(position.x - coordinates.x) < TOLERANCE &&
         Math.abs(position.y - coordinates.y) < TOLERANCE
         ? knownPreset.value
@@ -67,16 +80,18 @@ async function getPresetNameFromMain(position: Position): Promise<PresetValue> {
   return detectCurrentPresetFallback(position)
 }
 
-async function getPositionPreviewFromMain(position: Position, maxDisplayCount: number): Promise<PositionPreview> {
+async function getPositionPreviewFromMain(position: Position, maxDisplayCount: number, displayId: number | undefined,
+  displayMode: ConfigState['displayMode'], keyboardScale: number): Promise<PositionPreview> {
   const api = (window as unknown as { electronAPI?: PositionElectronAPI }).electronAPI
-  if (api?.getPositionPreview) return api.getPositionPreview(position, maxDisplayCount)
+  if (api?.getPositionPreview) return api.getPositionPreview(position, maxDisplayCount, displayId, displayMode, keyboardScale)
 
   const workArea = { x: 0, y: 0, width: window.screen.availWidth, height: window.screen.availHeight }
   const overlaySize = {
-    width: WINDOW_WIDTH,
-    height: 32 + maxDisplayCount * 54 + (maxDisplayCount - 1) * 8,
+    width: Math.min(displayMode === 'keyboard' ? Math.round(KEYBOARD_PANEL_WIDTH * keyboardScale / 100) : WINDOW_WIDTH, workArea.width),
+    height: Math.min(displayMode === 'keyboard' ? Math.round(KEYBOARD_PANEL_HEIGHT * keyboardScale / 100) : 32 + maxDisplayCount * 54 + (maxDisplayCount - 1) * 8, workArea.height),
   }
   return {
+    displayId: 0,
     workArea,
     overlaySize,
     position: position.x === -1 && position.y === -1
@@ -137,9 +152,13 @@ function detectCurrentPresetFallback(position: Position): PresetValue {
   return 'custom'
 }
 
-function PositionSetting({ position, maxDisplayCount, onChange, labels }: PositionSettingProps) {
+function PositionSetting({ position, displayId, maxDisplayCount, displayMode, keyboardScale, onChange, onDisplayChange, labels }: PositionSettingProps) {
   const [currentPreset, setCurrentPreset] = useState<PresetValue>('bottom-right')
+  const [displays, setDisplays] = useState<DisplayInfo[]>([])
+  const [displaysError, setDisplaysError] = useState(false)
   const [preview, setPreview] = useState<PositionPreview | null>(null)
+  const [previewDisplayMode, setPreviewDisplayMode] = useState<ConfigState['displayMode'] | null>(null)
+  const [previewKeyboardScale, setPreviewKeyboardScale] = useState<number | null>(null)
   const [draftPosition, setDraftPosition] = useState<Position | null>(null)
   const [xInput, setXInput] = useState('')
   const [yInput, setYInput] = useState('')
@@ -151,15 +170,40 @@ function PositionSetting({ position, maxDisplayCount, onChange, labels }: Positi
   const lastLiveUpdate = useRef(0)
   const editingAxis = useRef<'x' | 'y' | null>(null)
   const { x, y } = position
+  const previewMatchesDisplay = preview && (displayId === null || preview.displayId === displayId) &&
+    previewDisplayMode === displayMode && previewKeyboardScale === keyboardScale
+  const selectedDisplay = displays.find((display) => display.id === (displayId ?? preview?.displayId))
   const resolvedPosition = position.x === -1 && position.y === -1 ? preview?.position : position
   const visiblePosition = draftPosition ?? resolvedPosition
   const visibleX = visiblePosition?.x
   const visibleY = visiblePosition?.y
 
   useEffect(() => {
+    const api = (window as unknown as { electronAPI?: PositionElectronAPI }).electronAPI
+    if (!api?.getDisplays) return
+    let active = true
+    let receivedChange = false
+    const unsubscribe = api.onDisplaysChanged?.((nextDisplays) => {
+      receivedChange = true
+      setDisplays(nextDisplays)
+      setDisplaysError(false)
+    })
+    api.getDisplays().then((nextDisplays) => {
+      if (active && !receivedChange) setDisplays(nextDisplays)
+    }).catch((error) => {
+      console.error('Failed to load displays:', error)
+      if (active && !receivedChange) setDisplaysError(true)
+    })
+    return () => {
+      active = false
+      unsubscribe?.()
+    }
+  }, [])
+
+  useEffect(() => {
     const currentRequest = ++requestId.current
     let isActive = true
-    getPresetNameFromMain({ x, y }).then((preset) => {
+    getPresetNameFromMain({ x, y }, displayId ?? undefined).then((preset) => {
       if (isActive && requestId.current === currentRequest) {
         setCurrentPreset(preset)
       }
@@ -169,16 +213,22 @@ function PositionSetting({ position, maxDisplayCount, onChange, labels }: Positi
     return () => {
       isActive = false
     }
-  }, [x, y])
+  }, [x, y, displayId, maxDisplayCount, displayMode, keyboardScale, displays])
 
   useEffect(() => {
     const currentRequest = ++previewRequestId.current
-    getPositionPreviewFromMain({ x, y }, maxDisplayCount).then((nextPreview) => {
-      if (previewRequestId.current === currentRequest) setPreview(nextPreview)
+    let active = true
+    getPositionPreviewFromMain({ x, y }, maxDisplayCount, displayId ?? undefined, displayMode, keyboardScale).then((nextPreview) => {
+      if (active && previewRequestId.current === currentRequest) {
+        setPreview(nextPreview)
+        setPreviewDisplayMode(displayMode)
+        setPreviewKeyboardScale(keyboardScale)
+      }
     }).catch((error) => {
       console.error('Failed to load position preview:', error)
     })
-  }, [x, y, maxDisplayCount])
+    return () => { active = false }
+  }, [x, y, maxDisplayCount, displayMode, keyboardScale, displayId, displays])
 
   useEffect(() => {
     if (visibleX === undefined || visibleY === undefined) return
@@ -239,7 +289,7 @@ function PositionSetting({ position, maxDisplayCount, onChange, labels }: Positi
     const previousPreset = currentPreset
     setCurrentPreset(value)
     try {
-      const newPosition = await getPresetPositionFromMain(value)
+      const newPosition = await getPresetPositionFromMain(value, displayId ?? undefined)
       if (requestId.current === currentRequest) onChange(newPosition)
     } catch (error) {
       console.error('Failed to get preset position:', error)
@@ -254,7 +304,7 @@ function PositionSetting({ position, maxDisplayCount, onChange, labels }: Positi
     const previousPreset = currentPreset
     setCurrentPreset('bottom-right')
     try {
-      const defaultPosition = await getPresetPositionFromMain('bottom-right')
+      const defaultPosition = await getPresetPositionFromMain('bottom-right', displayId ?? undefined)
       if (requestId.current === currentRequest) onChange(defaultPosition)
     } catch (error) {
       console.error('Failed to reset position:', error)
@@ -266,12 +316,42 @@ function PositionSetting({ position, maxDisplayCount, onChange, labels }: Positi
 
   return (
     <div className="border-b py-3">
+      <label className="mb-3 flex flex-wrap items-center justify-between gap-2 text-gray-600">
+        <span>{labels.display}</span>
+        <select
+          value={selectedDisplay?.id ?? ''}
+          disabled={displays.length === 0}
+          onChange={(event) => {
+            requestId.current++
+            previewRequestId.current++
+            setDraftPosition(null)
+            setPreview(null)
+            onDisplayChange(Number(event.target.value))
+          }}
+          className="min-w-0 w-full rounded border bg-white px-2 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {displays.length === 0 && <option value="">{labels.screen}</option>}
+          {displays.map((display, index) => (
+            <option key={display.id} value={display.id}>
+              {index + 1}. {display.label || labels.screen} {display.isPrimary ? `(${labels.primary})` : ''}
+            </option>
+          ))}
+        </select>
+      </label>
+      {selectedDisplay && (
+        <div className="mb-3 flex flex-wrap justify-between gap-2 text-xs text-gray-500">
+          <span>{labels.resolution} {selectedDisplay.bounds.width} × {selectedDisplay.bounds.height}</span>
+          <span>{labels.scale} {Math.round(selectedDisplay.scaleFactor * 100)}%</span>
+        </div>
+      )}
+      {displaysError && <p role="alert" className="mb-3 text-sm text-red-700">{labels.displaysError}</p>}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-gray-600">{labels.title}</span>
         <div className="flex items-center gap-2">
           <select
             className="px-3 py-1.5 border rounded bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
             value={currentPreset}
+            disabled={!previewMatchesDisplay}
             onChange={handlePresetChange}
           >
             {PRESET_POSITIONS.map((preset) => (
@@ -283,13 +363,14 @@ function PositionSetting({ position, maxDisplayCount, onChange, labels }: Positi
           </select>
           <button
             onClick={handleResetPosition}
+            disabled={!previewMatchesDisplay}
             className="px-3 py-1.5 text-sm bg-gray-100 rounded hover:bg-gray-200 transition-colors"
           >
             {labels.reset}
           </button>
         </div>
       </div>
-      {preview && visiblePosition && (
+      {previewMatchesDisplay && preview && visiblePosition && (
         <>
           <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
             <span>{labels.preview}</span>
@@ -353,8 +434,16 @@ function PositionSetting({ position, maxDisplayCount, onChange, labels }: Positi
                 height: `${preview.overlaySize.height / preview.workArea.height * 100}%`,
               }}
             >
-              <span className="h-1 w-2/3 rounded-sm bg-white/75" />
-              <span className="h-1 w-1/2 rounded-sm bg-white/50" />
+              {displayMode === 'keyboard' ? (
+                <span className="grid h-full grid-cols-3 gap-0.5">
+                  {Array.from({ length: 9 }, (_, index) => <span key={index} className="rounded-sm bg-white/60" />)}
+                </span>
+              ) : (
+                <>
+                  <span className="h-1 w-2/3 rounded-sm bg-white/75" />
+                  <span className="h-1 w-1/2 rounded-sm bg-white/50" />
+                </>
+              )}
             </span>
           </button>
           <div className="mt-3 grid grid-cols-2 gap-3">
