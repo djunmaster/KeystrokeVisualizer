@@ -1,6 +1,7 @@
 import { BrowserWindow, screen } from 'electron';
 import { join } from 'path';
-import { ConfigState, DisplayInfo, IPC_CHANNELS, KEYBOARD_PANEL_HEIGHT, KEYBOARD_PANEL_WIDTH, Position, PositionPreview } from '../renderer/shared/types';
+import { ConfigState, DisplayInfo, IPC_CHANNELS, KEYBOARD_PANEL_WIDTH, KeyboardPanelSize, Position, PositionPreview,
+  getKeyboardRows, getConfiguredKeyboardPanelSize } from '../renderer/shared/types';
 import { ConfigStore } from './ConfigStore';
 
 const DISPLAY_CHANGE_DELAY_MS = 100;
@@ -238,10 +239,27 @@ export class WindowManager {
    * Keeps the window anchored near its current top/bottom position.
    */
   updateOverlaySize(maxDisplayCount: number, displayMode = this.configStore.get('displayMode'),
-    keyboardScale = this.configStore.get('keyboardScale')): void {
+    keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()): void {
     if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
+    const validated = this.getResizedOverlayPosition(maxDisplayCount, displayMode, keyboardScale, keyboardSize);
+    const size = this.getOverlayDimensions(maxDisplayCount, this.getActiveDisplay(), displayMode, keyboardScale, keyboardSize);
+    const saved = this.configStore.get('position');
+    if (saved.x !== validated.x || saved.y !== validated.y) this.configStore.set('position', validated);
+    this.applyingPosition = true;
+    try {
+      this.overlayWindow.setBounds({ ...validated, ...size });
+    } finally {
+      this.applyingPosition = false;
+    }
+  }
 
-    const { width: newWidth, height: newHeight } = this.getOverlayDimensions(maxDisplayCount, this.getActiveDisplay(), displayMode, keyboardScale);
+  getResizedOverlayPosition(maxDisplayCount: number, displayMode = this.configStore.get('displayMode'),
+    keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()): Position {
+    if (!this.overlayWindow || this.overlayWindow.isDestroyed()) {
+      return this.calculateOverlayPosition(this.configStore.get('position'), maxDisplayCount,
+        this.configStore.get('displayId'), displayMode, keyboardScale, keyboardSize);
+    }
+    const { width: newWidth, height: newHeight } = this.getOverlayDimensions(maxDisplayCount, this.getActiveDisplay(), displayMode, keyboardScale, keyboardSize);
     const { x, y } = this.configStore.get('position');
     const [oldWidth, oldHeight] = this.overlayWindow.getSize();
     const display = this.getActiveDisplay();
@@ -255,19 +273,7 @@ export class WindowManager {
     const nextY = anchor === 'bottom' ? y + oldHeight - newHeight : y;
     const nextX = x + oldWidth >= areaX + areaWidth - 50 ? x + oldWidth - newWidth : x;
 
-    const validated = this.validatePosition(nextX, nextY, maxDisplayCount, this.configStore.get('displayId'), displayMode, keyboardScale);
-    // Persist before setBounds so its native move event does not trigger a second write.
-    const saved = this.configStore.get('position');
-    if (saved.x !== validated.x || saved.y !== validated.y) {
-      this.configStore.set('position', validated);
-    }
-    // setBounds also applies shrink requests to the non-resizable overlay.
-    this.applyingPosition = true;
-    try {
-      this.overlayWindow.setBounds({ ...validated, width: newWidth, height: newHeight });
-    } finally {
-      this.applyingPosition = false;
-    }
+    return this.validatePosition(nextX, nextY, maxDisplayCount, this.configStore.get('displayId'), displayMode, keyboardScale, keyboardSize);
   }
 
   /**
@@ -334,15 +340,15 @@ export class WindowManager {
    * Public so IPC handlers can validate before saving to config.
    */
   validatePosition(x: number, y: number, maxDisplayCount?: number, displayId = this.configStore.get('displayId'),
-    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): Position {
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()): Position {
     const display = this.resolveDisplay(displayId, { x, y });
     // Reject invalid values (NaN, Infinity, etc.)
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      return this.getDefaultPosition(maxDisplayCount, display, displayMode, keyboardScale);
+      return this.getDefaultPosition(maxDisplayCount, display, displayMode, keyboardScale, keyboardSize);
     }
 
     const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
-    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale);
+    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale, keyboardSize);
 
     const clampedX = Math.round(Math.max(areaX, Math.min(x, areaX + areaWidth - windowWidth)));
     const clampedY = Math.round(Math.max(areaY, Math.min(y, areaY + areaHeight - windowHeight)));
@@ -358,25 +364,25 @@ export class WindowManager {
     position: { x: number; y: number },
     maxDisplayCount?: number,
     displayId = this.configStore.get('displayId'),
-    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()
   ): { x: number; y: number } {
     // Only (-1, -1) is the default-position sentinel; other negative coordinates
     // are valid on displays to the left or above the primary display.
     if (position.x !== -1 || position.y !== -1) {
-      return this.validatePosition(position.x, position.y, maxDisplayCount, displayId, displayMode, keyboardScale);
+      return this.validatePosition(position.x, position.y, maxDisplayCount, displayId, displayMode, keyboardScale, keyboardSize);
     }
 
     // Default: bottom-right corner
-    return this.getDefaultPosition(maxDisplayCount, this.resolveDisplay(displayId, position), displayMode, keyboardScale);
+    return this.getDefaultPosition(maxDisplayCount, this.resolveDisplay(displayId, position), displayMode, keyboardScale, keyboardSize);
   }
 
   /**
    * Get default window position (bottom-right corner).
    */
   private getDefaultPosition(maxDisplayCount?: number, display = this.getActiveDisplay(),
-    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): Position {
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()): Position {
     const { x: areaX, y: areaY, width: areaWidth, height: areaHeight } = display.workArea;
-    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale);
+    const { width: windowWidth, height: windowHeight } = this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale, keyboardSize);
     return {
       x: Math.max(areaX, areaX + areaWidth - (windowWidth + 20)),
       y: Math.max(areaY, areaY + areaHeight - (windowHeight + 20)),
@@ -393,13 +399,13 @@ export class WindowManager {
   }
 
   getPositionPreview(position: Position, maxDisplayCount: number, displayId = this.configStore.get('displayId'),
-    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): PositionPreview {
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()): PositionPreview {
     const display = this.resolveDisplay(displayId, position);
-    const resolved = this.calculateOverlayPosition(position, maxDisplayCount, display.id, displayMode, keyboardScale);
+    const resolved = this.calculateOverlayPosition(position, maxDisplayCount, display.id, displayMode, keyboardScale, keyboardSize);
     return {
       displayId: display.id,
       workArea: { ...display.workArea },
-      overlaySize: this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale),
+      overlaySize: this.getOverlayDimensions(maxDisplayCount, display, displayMode, keyboardScale, keyboardSize),
       position: resolved,
     };
   }
@@ -500,16 +506,24 @@ export class WindowManager {
    * Compute overlay window dimensions based on max display count.
    */
   private getOverlayDimensions(maxDisplayCount?: number, display = this.getActiveDisplay(),
-    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): { width: number; height: number } {
-    const width = displayMode === 'keyboard' ? Math.round(KEYBOARD_PANEL_WIDTH * keyboardScale / 100) : KEYBOARD_PANEL_WIDTH;
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()): { width: number; height: number } {
+    if (displayMode === 'keyboard') {
+      const scale = Math.min(keyboardScale / 100, display.workArea.width / keyboardSize.width, display.workArea.height / keyboardSize.height);
+      return { width: Math.round(keyboardSize.width * scale), height: Math.round(keyboardSize.height * scale) };
+    }
+    const width = KEYBOARD_PANEL_WIDTH;
     const count = Math.max(1, maxDisplayCount ?? this.configStore.get('maxDisplayCount') ?? 6);
     const itemHeight = 54; // Fits KeyItem with padding and text
     const gap = 8; // gap-2
     const padding = 16; // p-4
-    const height = displayMode === 'keyboard'
-      ? Math.round(KEYBOARD_PANEL_HEIGHT * keyboardScale / 100)
-      : padding * 2 + count * itemHeight + (count - 1) * gap;
+    const height = padding * 2 + count * itemHeight + (count - 1) * gap;
     return { width: Math.min(width, display.workArea.width), height: Math.min(height, display.workArea.height) };
+  }
+
+  private getKeyboardSize(): KeyboardPanelSize {
+    const config = this.configStore.getConfig();
+    return getConfiguredKeyboardPanelSize(config.keyboardLayout,
+      getKeyboardRows(config.keyboardLayout, config.customKeyboardLayouts, config.activeCustomKeyboardLayoutId));
   }
 
   getDisplays(): DisplayInfo[] {
@@ -525,13 +539,13 @@ export class WindowManager {
   }
 
   getPositionOnDisplay(displayId: number, position: Position, maxDisplayCount: number,
-    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale')): Position {
+    displayMode = this.configStore.get('displayMode'), keyboardScale = this.configStore.get('keyboardScale'), keyboardSize = this.getKeyboardSize()): Position {
     const target = screen.getAllDisplays().find((display) => display.id === displayId);
     if (!target) throw new RangeError('Display is no longer available');
     const config = this.configStore.getConfig();
     const source = this.resolveDisplay(config.displayId, config.position);
     return this.mapPositionToDisplay(position, source, target, config.maxDisplayCount, maxDisplayCount,
-      config.displayMode, displayMode, config.keyboardScale, keyboardScale);
+      config.displayMode, displayMode, config.keyboardScale, keyboardScale, this.getKeyboardSize(), keyboardSize);
   }
 
   private resolveDisplay(displayId: number | null, position: Position): Electron.Display {
@@ -546,10 +560,11 @@ export class WindowManager {
 
   private mapPositionToDisplay(position: Position, source: Electron.Display, target: Electron.Display,
     previousCount: number, nextCount = previousCount, previousMode = this.configStore.get('displayMode'),
-    nextMode = previousMode, previousScale = this.configStore.get('keyboardScale'), nextScale = previousScale): Position {
-    if (position.x === -1 && position.y === -1) return this.getDefaultPosition(nextCount, target, nextMode, nextScale);
-    const oldSize = this.getOverlayDimensions(previousCount, source, previousMode, previousScale);
-    const newSize = this.getOverlayDimensions(nextCount, target, nextMode, nextScale);
+    nextMode = previousMode, previousScale = this.configStore.get('keyboardScale'), nextScale = previousScale,
+    previousKeyboardSize = this.getKeyboardSize(), nextKeyboardSize = previousKeyboardSize): Position {
+    if (position.x === -1 && position.y === -1) return this.getDefaultPosition(nextCount, target, nextMode, nextScale, nextKeyboardSize);
+    const oldSize = this.getOverlayDimensions(previousCount, source, previousMode, previousScale, previousKeyboardSize);
+    const newSize = this.getOverlayDimensions(nextCount, target, nextMode, nextScale, nextKeyboardSize);
     const coordinate = (axis: 'x' | 'y', dimension: 'width' | 'height') => {
       const oldRange = source.workArea[dimension] - oldSize[dimension];
       const ratio = oldRange > 0 ? Math.max(0, Math.min(1, (position[axis] - source.workArea[axis]) / oldRange)) : 0;

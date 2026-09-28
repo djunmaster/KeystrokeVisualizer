@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { ConfigState, IPC_CHANNELS } from '../renderer/shared/types';
+import { ConfigState, IPC_CHANNELS, KeyboardPanelSize } from '../renderer/shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // Get current config
@@ -38,10 +38,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPresetName: (position: { x: number; y: number }, displayId?: number) => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_PRESET_NAME, position, displayId);
   },
+  exportConfig: () => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_CONFIG),
+  previewConfigImport: () => ipcRenderer.invoke(IPC_CHANNELS.PREVIEW_CONFIG_IMPORT),
+  applyConfigImport: (token: string, includePosition: boolean) => ipcRenderer.invoke(IPC_CHANNELS.APPLY_CONFIG_IMPORT, token, includePosition),
 
   getPositionPreview: (position: { x: number; y: number }, maxDisplayCount: number, displayId?: number,
-    displayMode?: ConfigState['displayMode'], keyboardScale?: number) => {
-    return ipcRenderer.invoke(IPC_CHANNELS.GET_POSITION_PREVIEW, position, maxDisplayCount, displayId, displayMode, keyboardScale);
+    displayMode?: ConfigState['displayMode'], keyboardScale?: number, keyboardSize?: KeyboardPanelSize) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GET_POSITION_PREVIEW, position, maxDisplayCount, displayId, displayMode, keyboardScale, keyboardSize);
   },
 
   getDisplays: () => ipcRenderer.invoke(IPC_CHANNELS.GET_DISPLAYS),

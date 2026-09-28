@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import { ConfigState, DEFAULT_CONFIG, MAX_KEYBOARD_SCALE, MIN_KEYBOARD_SCALE, Position } from '../renderer/shared/types';
+import { ConfigState, DEFAULT_CONFIG, MAX_KEYBOARD_SCALE, MIN_KEYBOARD_SCALE, Position, parseCustomKeyboardLayouts } from '../renderer/shared/types';
 import { isKeyThemeId, parseCustomStyles } from '../renderer/overlay/key-state';
 
 function isPosition(value: unknown): value is Position {
@@ -29,7 +29,21 @@ export class ConfigStore {
     if (persisted.displayMode !== 'history' && persisted.displayMode !== 'keyboard') {
       repaired.displayMode = DEFAULT_CONFIG.displayMode;
     }
-    if (persisted.keyboardLayout !== 'gaming' && persisted.keyboardLayout !== 'arrows') {
+    if (persisted.keyboardLayout !== 'gaming' && persisted.keyboardLayout !== 'arrows' && persisted.keyboardLayout !== 'custom') {
+      repaired.keyboardLayout = DEFAULT_CONFIG.keyboardLayout;
+    }
+    let customLayouts: ConfigState['customKeyboardLayouts'];
+    try {
+      customLayouts = parseCustomKeyboardLayouts(persisted.customKeyboardLayouts);
+    } catch {
+      customLayouts = [];
+      repaired.customKeyboardLayouts = customLayouts;
+    }
+    if (persisted.activeCustomKeyboardLayoutId !== null && (typeof persisted.activeCustomKeyboardLayoutId !== 'string' ||
+      !customLayouts.some((layout) => layout.id === persisted.activeCustomKeyboardLayoutId))) {
+      repaired.activeCustomKeyboardLayoutId = null;
+    }
+    if (persisted.keyboardLayout === 'custom' && !customLayouts.some((layout) => layout.id === persisted.activeCustomKeyboardLayoutId)) {
       repaired.keyboardLayout = DEFAULT_CONFIG.keyboardLayout;
     }
     if (!Number.isInteger(persisted.keyboardScale) ||
@@ -87,6 +101,7 @@ export class ConfigStore {
     const changed = Object.fromEntries(
       Object.entries(partialConfig).filter(([key, value]) => {
         const previous = current[key as keyof ConfigState];
+        if (key === 'customKeyboardLayouts') return JSON.stringify(value) !== JSON.stringify(previous);
         if (key === 'customStyles') {
           const nextStyles = value as ConfigState['customStyles'];
           const previousStyles = previous as ConfigState['customStyles'];

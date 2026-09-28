@@ -115,7 +115,7 @@ test('keyboard preview clamps size and coordinates to a small negative-coordinat
   const area = { x: -320, y: -200, width: 320, height: 180 };
   const { manager } = createWindows({ displayMode: 'keyboard' }, area);
   const preview = manager.getPositionPreview({ x: -1, y: -1 }, 12);
-  assert.deepEqual(plain(preview.overlaySize), { width: 320, height: 180 });
+  assert.deepEqual(plain(preview.overlaySize), { width: 320, height: 174 });
   assert.deepEqual(plain(preview.position), { x: -320, y: -200 });
 });
 
@@ -302,6 +302,8 @@ function createSettingsHarness(partial = {}, initialUpdate = { phase: 'unsupport
   const initial = { ...plain(shared.DEFAULT_CONFIG), isEnabled: true, ...partial };
   const requests = [];
   const updateActions = [];
+  const fileActions = [];
+  const importConfig = { ...initial, theme: 'paper' };
   const api = {
     getConfig: () => Promise.resolve(initial),
     getPauseShortcutStatus: () => Promise.resolve({ accelerator: shared.PAUSE_ACCELERATOR, registered: true }),
@@ -312,6 +314,9 @@ function createSettingsHarness(partial = {}, initialUpdate = { phase: 'unsupport
     checkForUpdates() { updateActions.push('check'); return Promise.resolve({ phase: 'up-to-date', currentVersion: '1.0.0' }); },
     downloadUpdate() { updateActions.push('download'); return Promise.resolve({ phase: 'ready', currentVersion: '1.0.0', availableVersion: '1.1.0' }); },
     installUpdate() { updateActions.push('install'); return Promise.resolve({ phase: 'installing', currentVersion: '1.0.0', availableVersion: '1.1.0' }); },
+    exportConfig() { fileActions.push('export'); return Promise.resolve('backup.json'); },
+    previewConfigImport() { fileActions.push('preview'); return Promise.resolve({ config: importConfig, token: 'token', fileName: 'backup.json', appVersion: '1.0.1', exportedAt: '2026-09-28T00:00:00Z' }); },
+    applyConfigImport(token, includePosition) { fileActions.push({ token, includePosition }); return Promise.resolve(importConfig); },
   };
   const hooks = {
     useState(value) {
@@ -359,7 +364,8 @@ function createSettingsHarness(partial = {}, initialUpdate = { phase: 'unsupport
     for (const child of children) { const match = find(child, predicate); if (match) return match; }
   }
   return {
-    initial, requests, updateActions, render,
+    initial, requests, updateActions, fileActions, render,
+    fileControl(attribute) { return find(tree, (element) => attribute in (element.props ?? {})); },
     receive(config) { onConfigChanged(config); },
     receiveUpdate(status) { onUpdateStatusChanged(status); },
     pauseButton() { return find(tree, (element) => element.type === 'button' && ['暂停显示', '恢复显示'].includes(element.props.children)); },
@@ -508,7 +514,7 @@ test('failed custom style saves report failure and preserve the confirmed theme'
   assert.equal(settings.themeSetting().props.config.theme, settings.initial.theme);
 });
 
-function createThemeHarness(partial = {}) {
+function createThemeHarness(partial = {}, componentName = 'ThemeSetting') {
   let config = { ...plain(shared.DEFAULT_CONFIG), ...partial };
   const slots = [];
   let cursor = 0;
@@ -531,15 +537,15 @@ function createThemeHarness(partial = {}) {
       }
     },
   };
-  const { ThemeSetting } = load('src/renderer/settings/App.tsx', {
+  const component = load('src/renderer/settings/App.tsx', {
     react: hooks, '../shared/types': shared, '../overlay/key-state': themes,
     '../overlay/components/KeyDisplay': { KeyboardPanel() {} }, '../overlay/components/KeyItem': { default() {} },
     './components/PositionSetting': {}, './components/AnimationSetting': {},
     './components/StartupSetting': {}, './components/DisplayCountSetting': {},
-  }, { window: { confirm: () => confirm, crypto: { randomUUID: () => `style-${++nextId}` } }, console });
+  }, { window: { confirm: () => confirm, crypto: { randomUUID: () => `style-${++nextId}` } }, console })[componentName];
   function render() {
     cursor = 0;
-    tree = ThemeSetting({ config, onChange(partial) {
+    tree = component({ config, onChange(partial) {
       const request = { partial, ...deferred() };
       requests.push(request);
       return request.promise;
@@ -568,6 +574,76 @@ function createThemeHarness(partial = {}) {
     },
   };
 }
+
+test('config export waits for pending settings to save and import requires a separate confirmation', async () => {
+  const settings = createSettingsHarness();
+  settings.render(); await flushPromises(); settings.render();
+  settings.themeSetting().props.onChange({ theme: 'mint' });
+  settings.pageTab('app').props.onClick(); settings.render();
+  settings.fileControl('data-config-export').props.onClick();
+  await flushPromises();
+  assert.equal(settings.fileActions.length, 0, 'Export cannot race the config queue');
+  settings.requests[0].resolve({ ...settings.initial, theme: 'mint' });
+  await new Promise((resolve) => setImmediate(resolve)); settings.render();
+  assert.deepEqual(settings.fileActions, ['export']);
+  settings.fileControl('data-config-import').props.onClick();
+  await new Promise((resolve) => setImmediate(resolve)); settings.render();
+  assert.deepEqual(settings.fileActions, ['export', 'preview']);
+  assert.ok(settings.fileControl('data-config-import-preview'));
+  settings.fileControl('data-config-import-apply').props.onClick();
+  await new Promise((resolve) => setImmediate(resolve)); settings.render();
+  assert.deepEqual(settings.fileActions[2], { token: 'token', includePosition: false });
+  assert.equal(settings.fileControl('data-config-import-preview'), undefined);
+  assert.equal(settings.themeSetting().props.config.theme, 'paper');
+});
+
+test('layout drafts preview locally, survive external updates, and keep edits after a failed save', async () => {
+  const editor = createThemeHarness({}, 'KeyboardLayoutSetting');
+  editor.render();
+  editor.control('data-edit-layout').props.onClick(); editor.render();
+  editor.edit('data-layout-name', 'Work');
+  editor.edit('data-layout-key', 'Q');
+  editor.edit('data-layout-width', '1.5');
+  editor.edit('data-layout-label', 'Interact');
+  assert.equal(editor.requests.length, 0);
+  editor.receive({ theme: 'paper', isPaused: true });
+  assert.equal(editor.control('data-layout-name').props.value, 'Work');
+  assert.equal(editor.control('data-layout-label').props.value, 'Interact');
+  editor.control('data-save-layout').props.onClick();
+  editor.complete(false); await flushPromises(); editor.render();
+  assert.equal(editor.control('data-layout-name').props.value, 'Work');
+  editor.control('data-save-layout').props.onClick();
+  const saved = editor.requests[1].partial;
+  assert.equal(saved.keyboardLayout, 'custom');
+  assert.deepEqual(plain(saved.customKeyboardLayouts[0].rows[0][0]), { key: 'Q', width: 1.5, label: 'Interact' });
+  editor.complete(true); await flushPromises(); editor.render();
+  assert.ok(editor.control('data-save-layout-as'));
+  editor.control('data-save-layout-as').props.onClick();
+  assert.equal(editor.requests[2].partial.customKeyboardLayouts.length, 2);
+  editor.complete(true); await flushPromises(); editor.render();
+  editor.confirm(false); editor.control('data-delete-layout').props.onClick();
+  assert.equal(editor.requests.length, 3);
+});
+
+test('a full keyboard template saves six rows, includes side modifiers, and rejects invalid widths', async () => {
+  const editor = createThemeHarness({}, 'KeyboardLayoutSetting');
+  editor.render(); editor.control('data-edit-layout').props.onClick(); editor.render();
+  editor.edit('data-layout-template', 'full');
+  editor.control('data-new-layout').props.onClick(); editor.render();
+  editor.edit('data-layout-name', 'Full');
+  editor.edit('data-layout-width', '0');
+  assert.equal(editor.control('data-save-layout').props.disabled, true);
+  editor.control('data-save-layout').props.onClick();
+  assert.equal(editor.requests.length, 0);
+  editor.edit('data-layout-width', '1');
+  editor.control('data-save-layout').props.onClick();
+  const layout = editor.requests[0].partial.customKeyboardLayouts[0];
+  assert.equal(layout.rows.length, 6);
+  assert.ok(layout.rows.flat().some((cell) => cell.key === 'ShiftRight'));
+  assert.ok(layout.rows.flat().some((cell) => cell.key === 'CtrlLeft'));
+  assert.ok(shared.getKeyboardPanelSize(layout.rows).width <= shared.MAX_ROW_WIDTH);
+  editor.complete(true); await flushPromises();
+});
 
 test('CSS drafts only change the scoped local preview and survive external config updates', () => {
   const editor = createThemeHarness();

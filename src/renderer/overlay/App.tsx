@@ -98,6 +98,8 @@ function App() {
         displayMode={config.displayMode}
         keyboardLayout={config.keyboardLayout}
         keyboardScale={config.keyboardScale}
+        customKeyboardLayouts={config.customKeyboardLayouts}
+        activeCustomKeyboardLayoutId={config.activeCustomKeyboardLayoutId}
         fadeOutDuration={config.fadeOutDuration}
         maxDisplayCount={config.maxDisplayCount}
         stackFrom={stackFrom}

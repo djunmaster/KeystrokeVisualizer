@@ -15,7 +15,7 @@ function load(relativePath, dependencies = {}, globals = {}) {
   }).outputText;
   const module = { exports: {} };
   vm.runInNewContext(code, {
-    module, exports: module.exports, process, console, setTimeout, clearTimeout, setImmediate,
+    module, exports: module.exports, process, console, Buffer, setTimeout, clearTimeout, setImmediate,
     require: (name) => dependencies[name] ?? require(name), ...globals,
   }, { filename: file });
   return module.exports;
@@ -35,7 +35,7 @@ test('settings preload forwards the keyboard scale to the position preview IPC',
     '../renderer/shared/types': shared,
   });
   api.getPositionPreview({ x: 10, y: 20 }, 6, 1, 'keyboard', 150);
-  assert.deepEqual(plain(calls[0]), [shared.IPC_CHANNELS.GET_POSITION_PREVIEW, { x: 10, y: 20 }, 6, 1, 'keyboard', 150]);
+  assert.deepEqual(plain(calls[0].slice(0, 6)), [shared.IPC_CHANNELS.GET_POSITION_PREVIEW, { x: 10, y: 20 }, 6, 1, 'keyboard', 150]);
 });
 
 function createStore(partial = {}) {
@@ -257,19 +257,22 @@ test('invalid persisted keyboard scale is repaired to the default', () => {
   }
 });
 
-function ipcHarness(partial = {}, { packaged = false, portable = false, checkFails = false, downloadFails = false } = {}) {
+function ipcHarness(partial = {}, { packaged = false, portable = false, checkFails = false, downloadFails = false,
+  importContent, cancelDialog = false, fileSize } = {}) {
   const handlers = new Map();
   const updateEvents = new Map();
   const timers = [];
   const notices = [];
+  const files = new Map();
   const store = createStore({ isEnabled: true, displayId: 1, ...partial });
   const calls = { sizes: [], previews: [], positions: [], displays: [], broadcasts: 0, updates: [], checks: 0, downloads: 0, installs: 0, settings: 0, quitting: [] };
   const windows = {
     updateOverlaySize(...args) { calls.sizes.push(args); },
+    getResizedOverlayPosition(...args) { calls.sizes.push(args); return store.get('position'); },
     validatePosition(...args) { calls.positions.push(args); return { x: args[0], y: args[1] }; },
     getPositionOnDisplay(...args) { calls.displays.push(args); return args[1]; },
     updateOverlayPosition() {},
-    getPositionPreview(...args) { calls.previews.push(args); return {}; },
+    getPositionPreview(...args) { calls.previews.push(args); return { position: { x: 10, y: 20 } }; },
     sendToAll() { calls.broadcasts++; },
     sendToSettings(channel, value) { calls.updates.push({ channel, value }); },
     getSettingsWindow: () => null,
@@ -298,11 +301,20 @@ function ipcHarness(partial = {}, { packaged = false, portable = false, checkFai
     on(name, callback) { this.events.set(name, callback); }
     show() {}
   }
-  const { setupIPCHandlers } = load('src/main/ipc-handlers.ts', {
+  const moduleAPI = load('src/main/ipc-handlers.ts', {
     electron: {
       ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
       app: { isPackaged: packaged, getVersion: () => '1.0.0', on() {} },
       Notification: MockNotification,
+      dialog: {
+        showSaveDialog: async () => ({ canceled: cancelDialog, filePath: 'backup.json' }),
+        showOpenDialog: async () => ({ canceled: cancelDialog, filePaths: ['backup.json'] }),
+      },
+    },
+    'fs/promises': {
+      stat: async () => ({ size: fileSize ?? Buffer.byteLength(importContent ?? '') }),
+      readFile: async () => importContent,
+      writeFile: async (file, content) => { files.set(file, content); },
     },
     'electron-updater': { autoUpdater: updater },
     '../renderer/shared/types': shared,
@@ -316,8 +328,8 @@ function ipcHarness(partial = {}, { packaged = false, portable = false, checkFai
     clearInterval() {},
     setImmediate(callback) { callback(); },
   });
-  setupIPCHandlers(store, windows, { getKeyState: () => state }, () => shortcut);
-  return { store, calls, state, shortcut, updater, updateEvents, timers, notices,
+  moduleAPI.setupIPCHandlers(store, windows, { getKeyState: () => state }, () => shortcut);
+  return { store, calls, state, shortcut, updater, updateEvents, timers, notices, files, moduleAPI,
     emitUpdate(name, value) { updateEvents.get(name)?.(value); },
     invoke(channel, ...args) {
     assert.equal(typeof handlers.get(channel), 'function', `Missing handler: ${channel}`);
@@ -336,6 +348,133 @@ test('development and portable builds cannot start an in-app update', async () =
     assert.equal(h.calls.checks, 0);
     assert.throws(() => h.invoke(shared.IPC_CHANNELS.INSTALL_UPDATE));
   }
+});
+
+const customLayout = (overrides = {}) => ({ id: 'work', name: 'Work', rows: [
+  [{ key: 'Q', width: 1 }, { key: 'E', width: 1, label: 'Use' }],
+  [{ key: 'CtrlRight', width: 1.25 }, { key: 'Space', width: 2 }],
+], ...overrides });
+
+test('custom layouts validate physical keys, dimensions, names and unique ids', () => {
+  const layout = customLayout({ name: ' Work ' });
+  assert.equal(shared.parseCustomKeyboardLayouts([layout])[0].name, 'Work');
+  for (const invalid of [
+    [layout, layout], [customLayout({ name: '' })], [customLayout({ rows: [] })],
+    [customLayout({ rows: [[]] })], [customLayout({ extra: true })],
+    [customLayout({ rows: [[{ key: '__proto__', width: 1 }]] })],
+    [customLayout({ rows: [[{ key: 'Q', width: 1 }, { key: 'Q', width: 1 }]] })],
+    ...[0, 0.3, 9, Infinity, '1'].map((width) => [customLayout({ rows: [[{ key: 'Q', width }]] })]),
+  ]) assert.throws(() => shared.parseCustomKeyboardLayouts(invalid));
+  assert.deepEqual(plain(shared.getKeyboardPanelSize(layout.rows)), { width: 248, height: 152 });
+});
+
+test('custom layout selection and deletion maintain references and resize the active panel', () => {
+  const h = ipcHarness({ displayMode: 'keyboard' });
+  const layout = customLayout();
+  const saved = h.invoke(shared.IPC_CHANNELS.UPDATE_CONFIG, {
+    keyboardLayout: 'custom', customKeyboardLayouts: [layout], activeCustomKeyboardLayoutId: layout.id,
+  });
+  assert.equal(saved.keyboardLayout, 'custom');
+  assert.equal(saved.activeCustomKeyboardLayoutId, layout.id);
+  assert.equal(h.calls.sizes.length, 1);
+  assert.equal(h.store.writes.length, 1);
+  h.invoke(shared.IPC_CHANNELS.UPDATE_CONFIG, { customKeyboardLayouts: [] });
+  assert.equal(h.store.get('keyboardLayout'), 'gaming');
+  assert.equal(h.store.get('activeCustomKeyboardLayoutId'), null);
+  assert.equal(h.calls.sizes.length, 2);
+});
+
+test('invalid custom layout references reject the entire update before side effects', () => {
+  for (const update of [
+    { keyboardLayout: 'custom' }, { activeCustomKeyboardLayoutId: 'missing' },
+    { customKeyboardLayouts: [customLayout({ rows: [[]] })] },
+  ]) {
+    const h = ipcHarness();
+    const previous = h.store.getConfig();
+    assert.throws(() => h.invoke(shared.IPC_CHANNELS.UPDATE_CONFIG, { theme: 'paper', ...update }));
+    assert.deepEqual(h.store.getConfig(), previous);
+    assert.equal(h.calls.broadcasts, 0);
+  }
+});
+
+test('custom layout migration preserves valid layouts and repairs a missing active layout', () => {
+  const valid = persistedConfigHarness({ keyboardLayout: 'custom', customKeyboardLayouts: [customLayout()], activeCustomKeyboardLayoutId: 'work' });
+  assert.equal(valid.configStore.get('keyboardLayout'), 'custom');
+  assert.equal(valid.storage.writes, 0);
+  const stale = persistedConfigHarness({ keyboardLayout: 'custom', customKeyboardLayouts: [], activeCustomKeyboardLayoutId: 'missing' });
+  assert.equal(stale.configStore.get('keyboardLayout'), 'gaming');
+  assert.equal(stale.configStore.get('activeCustomKeyboardLayoutId'), null);
+  assert.equal(stale.storage.writes, 1);
+});
+
+const backup = (config = {}, overrides = {}) => ({
+  format: 'keystroke-visualizer-config', schemaVersion: 1, appVersion: '1.0.1',
+  exportedAt: '2026-09-28T00:00:00.000Z', config: { ...plain(shared.DEFAULT_CONFIG), ...config }, ...overrides,
+});
+
+test('export writes a versioned JSON file containing saved layouts and styles', async () => {
+  const layout = customLayout();
+  const h = ipcHarness({ customKeyboardLayouts: [layout], customStyles: [customStyle()] });
+  assert.equal(await h.invoke(shared.IPC_CHANNELS.EXPORT_CONFIG), 'backup.json');
+  const content = JSON.parse(h.files.get('backup.json'));
+  assert.equal(content.schemaVersion, 1);
+  assert.equal(content.format, 'keystroke-visualizer-config');
+  assert.deepEqual(content.config.customKeyboardLayouts, [layout]);
+  assert.deepEqual(content.config.customStyles, [customStyle()]);
+  assert.equal(h.moduleAPI.parseConfigBackup(content).config.theme, 'classic');
+});
+
+test('canceling import or export leaves files and configuration untouched', async () => {
+  const h = ipcHarness({}, { cancelDialog: true });
+  assert.equal(await h.invoke(shared.IPC_CHANNELS.EXPORT_CONFIG), null);
+  assert.equal(await h.invoke(shared.IPC_CHANNELS.PREVIEW_CONFIG_IMPORT), null);
+  assert.equal(h.files.size, 0);
+  assert.equal(h.store.writes.length, 0);
+});
+
+test('import previews first, applies once, and preserves this computer settings', async () => {
+  const layout = customLayout();
+  const config = { theme: 'paper', keyboardLayout: 'custom', customKeyboardLayouts: [layout], activeCustomKeyboardLayoutId: layout.id,
+    autoStart: true, isEnabled: false, isPaused: true, displayId: 99, position: { x: 99999, y: 99999 } };
+  const h = ipcHarness({ autoStart: false, isPaused: false, position: { x: 10, y: 20 } }, { importContent: JSON.stringify(backup(config)) });
+  const preview = await h.invoke(shared.IPC_CHANNELS.PREVIEW_CONFIG_IMPORT);
+  assert.equal(preview.config.theme, 'paper');
+  assert.equal(h.store.writes.length, 0);
+  const applied = h.invoke(shared.IPC_CHANNELS.APPLY_CONFIG_IMPORT, preview.token, false);
+  assert.equal(applied.theme, 'paper');
+  assert.equal(applied.keyboardLayout, 'custom');
+  assert.equal(applied.autoStart, false);
+  assert.equal(applied.isEnabled, true);
+  assert.equal(applied.isPaused, false);
+  assert.equal(applied.displayId, 1);
+  assert.deepEqual(plain(applied.position), { x: 10, y: 20 });
+  assert.equal(h.store.writes.length, 1);
+  assert.throws(() => h.invoke(shared.IPC_CHANNELS.APPLY_CONFIG_IMPORT, preview.token, false));
+});
+
+test('malformed, oversized, or unsupported backups fail before writing any config', async () => {
+  for (const invalid of ['{', JSON.stringify(backup({}, { schemaVersion: 2 })),
+    JSON.stringify(backup({ keyboardLayout: 'custom', activeCustomKeyboardLayoutId: 'missing' })),
+    JSON.stringify(backup({ customStyles: [customStyle({ css: '@import "bad";' })] })),
+    JSON.stringify(backup({ unknown: true })), JSON.stringify(backup({}, { config: {} })),
+  ]) {
+    const h = ipcHarness({}, { importContent: invalid });
+    await assert.rejects(h.invoke(shared.IPC_CHANNELS.PREVIEW_CONFIG_IMPORT));
+    assert.equal(h.store.writes.length, 0);
+  }
+  const large = ipcHarness({}, { importContent: '{}', fileSize: shared.MAX_CONFIG_FILE_BYTES + 1 });
+  await assert.rejects(large.invoke(shared.IPC_CHANNELS.PREVIEW_CONFIG_IMPORT));
+});
+
+test('imported position is resolved against the local screen and stale preview tokens cannot be applied', async () => {
+  const h = ipcHarness({}, { importContent: JSON.stringify(backup({ position: { x: -1, y: -1 }, displayId: 999 })) });
+  const stale = await h.invoke(shared.IPC_CHANNELS.PREVIEW_CONFIG_IMPORT);
+  const current = await h.invoke(shared.IPC_CHANNELS.PREVIEW_CONFIG_IMPORT);
+  assert.throws(() => h.invoke(shared.IPC_CHANNELS.APPLY_CONFIG_IMPORT, stale.token, true));
+  const applied = h.invoke(shared.IPC_CHANNELS.APPLY_CONFIG_IMPORT, current.token, true);
+  assert.equal(h.calls.previews[0][2], 1);
+  assert.deepEqual(plain(applied.position), { x: 10, y: 20 });
+  assert.equal(applied.displayId, 1);
 });
 
 test('installed build checks, downloads, and installs only after the update is ready', async () => {
@@ -394,7 +533,7 @@ test('mode and count changes resize with the new mode and preserve explicit coor
   });
   assert.equal(config.displayMode, 'keyboard');
   assert.equal(config.keyboardLayout, 'arrows');
-  assert.deepEqual(plain(h.calls.sizes[0]), [12, 'keyboard', 100]);
+  assert.equal(h.calls.sizes.length, 0, 'Explicit coordinates take precedence over resize anchoring');
   assert.equal(h.calls.positions[0][4], 'keyboard');
   assert.deepEqual(plain(config.position), { x: 20, y: 40 });
 });

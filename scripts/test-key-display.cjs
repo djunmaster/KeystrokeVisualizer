@@ -192,6 +192,15 @@ const largePanel = renderToStaticMarkup(React.createElement(KeyboardPanel, {
 }));
 assert.match(largePanel, /width:600px;height:327px/);
 assert.match(largePanel, /--kv-panel-font-size:27px/);
+const customPanel = renderToStaticMarkup(React.createElement(KeyboardPanel, {
+  keyboardLayout: 'custom', rows: [[{ key: 'Q', width: 1, label: 'Interact' }, { key: 'Spacer', width: 0.5 },
+    { key: 'CtrlRight', width: 1.25 }]], heldKeyCodes: [0x0010, 0x0E1D], viewportWidth: 400, viewportHeight: 218,
+}));
+assert.match(customPanel, /width:224px;height:86px/);
+assert.match(customPanel, /data-key="Q" data-role="main" data-held="true"/);
+assert.match(customPanel, />Interact</);
+assert.match(customPanel, /data-key="CtrlRight" data-role="modifier" data-held="true"/);
+assert.doesNotMatch(customPanel, /data-key="Spacer"/);
 const historyMarkup = renderToStaticMarkup(React.createElement(KeyDisplay, { ...panelProps, displayMode: 'history' }));
 assert.match(historyMarkup, /class="kv-history /);
 

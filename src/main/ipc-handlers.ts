@@ -1,9 +1,14 @@
-import { app, ipcMain, Notification } from 'electron';
+import { app, dialog, ipcMain, Notification } from 'electron';
+import { readFile, stat, writeFile } from 'fs/promises';
+import { basename } from 'path';
+import { randomUUID } from 'crypto';
 import { autoUpdater } from 'electron-updater';
 import { ConfigStore } from './ConfigStore';
 import { WindowManager } from './WindowManager';
 import { KeyListener } from './KeyListener';
-import { IPC_CHANNELS, ConfigState, MAX_KEYBOARD_SCALE, MIN_KEYBOARD_SCALE, PauseShortcutStatus, UpdateStatus } from '../renderer/shared/types';
+import { IPC_CHANNELS, ConfigState, MAX_KEYBOARD_SCALE, MIN_KEYBOARD_SCALE, PauseShortcutStatus, UpdateStatus,
+  ConfigBackup, ConfigImportPreview, CONFIG_FILE_FORMAT, CONFIG_SCHEMA_VERSION, DEFAULT_CONFIG, MAX_CONFIG_FILE_BYTES,
+  KeyboardPanelSize, MAX_ROW_WIDTH, MAX_KEYBOARD_PANEL_HEIGHT, KEYBOARD_PADDING, getKeyboardRows, getConfiguredKeyboardPanelSize, parseCustomKeyboardLayouts } from '../renderer/shared/types';
 import { isKeyThemeId, parseCustomStyles } from '../renderer/overlay/key-state';
 
 const MIN_FADE_OUT_DURATION = 200;
@@ -136,10 +141,17 @@ function parseConfigUpdate(input: unknown): Partial<ConfigState> {
         update.displayMode = value;
         break;
       case 'keyboardLayout':
-        if (value !== 'gaming' && value !== 'arrows') {
-          throw new TypeError('keyboardLayout must be gaming or arrows');
+        if (value !== 'gaming' && value !== 'arrows' && value !== 'custom') {
+          throw new TypeError('keyboardLayout must be gaming, arrows or custom');
         }
         update.keyboardLayout = value;
+        break;
+      case 'customKeyboardLayouts':
+        update.customKeyboardLayouts = parseCustomKeyboardLayouts(value);
+        break;
+      case 'activeCustomKeyboardLayoutId':
+        if (value !== null && typeof value !== 'string') throw new TypeError('activeCustomKeyboardLayoutId must be a string or null');
+        update.activeCustomKeyboardLayoutId = value;
         break;
       case 'keyboardScale':
         if (!Number.isInteger(value) || (value as number) < MIN_KEYBOARD_SCALE ||
@@ -180,8 +192,8 @@ function parseConfigUpdate(input: unknown): Partial<ConfigState> {
         update.language = value;
         break;
       case 'displayId':
-        if (!Number.isSafeInteger(value)) throw new TypeError('displayId must be an integer');
-        update.displayId = value as number;
+        if (value !== null && !Number.isSafeInteger(value)) throw new TypeError('displayId must be an integer or null');
+        update.displayId = value as number | null;
         break;
       case 'position': {
         if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -199,6 +211,37 @@ function parseConfigUpdate(input: unknown): Partial<ConfigState> {
     }
   }
   return update;
+}
+
+export function parseConfigBackup(input: unknown): ConfigBackup {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Backup must be an object');
+  const backup = input as Record<string, unknown>;
+  if (backup.format !== CONFIG_FILE_FORMAT || backup.schemaVersion !== CONFIG_SCHEMA_VERSION) {
+    throw new TypeError('Unsupported configuration file format or version');
+  }
+  if (typeof backup.appVersion !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(backup.appVersion) ||
+    typeof backup.exportedAt !== 'string' || !Number.isFinite(Date.parse(backup.exportedAt))) {
+    throw new TypeError('Invalid backup metadata');
+  }
+  const parsed = parseConfigUpdate(backup.config);
+  if (Object.keys(DEFAULT_CONFIG).some((key) => !Object.prototype.hasOwnProperty.call(parsed, key))) {
+    throw new TypeError('Backup is missing required settings');
+  }
+  const config = parsed as ConfigState;
+  if (config.activeCustomStyleId !== null && !config.customStyles.some((style) => style.id === config.activeCustomStyleId)) {
+    throw new RangeError('Backup references an unavailable custom style');
+  }
+  if ((config.activeCustomKeyboardLayoutId !== null || config.keyboardLayout === 'custom') &&
+    !config.customKeyboardLayouts.some((layout) => layout.id === config.activeCustomKeyboardLayoutId)) {
+    throw new RangeError('Backup references an unavailable custom layout');
+  }
+  return { format: CONFIG_FILE_FORMAT, schemaVersion: CONFIG_SCHEMA_VERSION,
+    appVersion: backup.appVersion, exportedAt: backup.exportedAt, config };
+}
+
+function keyboardSize(config: ConfigState): KeyboardPanelSize {
+  return getConfiguredKeyboardPanelSize(config.keyboardLayout,
+    getKeyboardRows(config.keyboardLayout, config.customKeyboardLayouts, config.activeCustomKeyboardLayoutId));
 }
 
 /**
@@ -221,7 +264,7 @@ export function setupIPCHandlers(
   });
 
   // Update config
-  ipcMain.handle(IPC_CHANNELS.UPDATE_CONFIG, (_, input: unknown): ConfigState => {
+  const applyConfigUpdate = (input: unknown): ConfigState => {
     const requested = parseConfigUpdate(input);
     const previous = configStore.getConfig();
     const nextStyles = requested.customStyles ?? previous.customStyles;
@@ -234,21 +277,36 @@ export function setupIPCHandlers(
       !nextStyles.some((style) => style.id === previous.activeCustomStyleId)) {
       requested.activeCustomStyleId = null;
     }
+    const layouts = requested.customKeyboardLayouts ?? previous.customKeyboardLayouts;
+    if (typeof requested.activeCustomKeyboardLayoutId === 'string' &&
+      !layouts.some((layout) => layout.id === requested.activeCustomKeyboardLayoutId)) {
+      throw new RangeError('Active custom layout is not available');
+    }
+    if (requested.customKeyboardLayouts && requested.activeCustomKeyboardLayoutId === undefined &&
+      !layouts.some((layout) => layout.id === previous.activeCustomKeyboardLayoutId)) {
+      requested.activeCustomKeyboardLayoutId = null;
+      if (requested.keyboardLayout === undefined && previous.keyboardLayout === 'custom') requested.keyboardLayout = 'gaming';
+    }
+    const next = { ...previous, ...requested };
+    if (next.keyboardLayout === 'custom' && !layouts.some((layout) => layout.id === next.activeCustomKeyboardLayoutId)) {
+      throw new RangeError('Select a saved custom layout first');
+    }
+    const nextSize = keyboardSize(next);
     if (typeof requested.displayId === 'number' && requested.displayId !== previous.displayId) {
       requested.position = windowManager.getPositionOnDisplay(
         requested.displayId, requested.position ?? previous.position,
         requested.maxDisplayCount ?? previous.maxDisplayCount,
         requested.displayMode ?? previous.displayMode,
-        requested.keyboardScale ?? previous.keyboardScale
+        requested.keyboardScale ?? previous.keyboardScale, nextSize
       );
     } else if (requested.position) {
       requested.position = windowManager.validatePosition(
         requested.position.x,
         requested.position.y,
         requested.maxDisplayCount ?? previous.maxDisplayCount,
-        previous.displayId,
+        requested.displayId ?? previous.displayId,
         requested.displayMode ?? previous.displayMode,
-        requested.keyboardScale ?? previous.keyboardScale
+        requested.keyboardScale ?? previous.keyboardScale, nextSize
       );
     }
 
@@ -257,6 +315,12 @@ export function setupIPCHandlers(
     if (requested.isPaused !== undefined && requested.isPaused !== previous.isPaused) changed.isPaused = requested.isPaused;
     if (requested.displayMode !== undefined && requested.displayMode !== previous.displayMode) changed.displayMode = requested.displayMode;
     if (requested.keyboardLayout !== undefined && requested.keyboardLayout !== previous.keyboardLayout) changed.keyboardLayout = requested.keyboardLayout;
+    if (requested.activeCustomKeyboardLayoutId !== undefined && requested.activeCustomKeyboardLayoutId !== previous.activeCustomKeyboardLayoutId) {
+      changed.activeCustomKeyboardLayoutId = requested.activeCustomKeyboardLayoutId;
+    }
+    if (requested.customKeyboardLayouts && JSON.stringify(requested.customKeyboardLayouts) !== JSON.stringify(previous.customKeyboardLayouts)) {
+      changed.customKeyboardLayouts = requested.customKeyboardLayouts;
+    }
     if (requested.keyboardScale !== undefined && requested.keyboardScale !== previous.keyboardScale) changed.keyboardScale = requested.keyboardScale;
     if (requested.theme !== undefined && requested.theme !== previous.theme) changed.theme = requested.theme;
     if (requested.activeCustomStyleId !== undefined && requested.activeCustomStyleId !== previous.activeCustomStyleId) {
@@ -280,17 +344,15 @@ export function setupIPCHandlers(
     }
     if (Object.keys(changed).length === 0) return previous;
 
-    // Resize before applying an explicit position so the requested coordinates win.
-    if ((changed.maxDisplayCount !== undefined || changed.displayMode !== undefined ||
-      (changed.keyboardScale !== undefined && previous.displayMode === 'keyboard')) && changed.displayId === undefined) {
-      windowManager.updateOverlaySize(
-        changed.maxDisplayCount ?? previous.maxDisplayCount,
-        changed.displayMode ?? previous.displayMode,
-        changed.keyboardScale ?? previous.keyboardScale
-      );
+    const oldSize = keyboardSize(previous);
+    const resize = changed.maxDisplayCount !== undefined || changed.displayMode !== undefined ||
+      (next.displayMode === 'keyboard' && (changed.keyboardScale !== undefined || oldSize.width !== nextSize.width || oldSize.height !== nextSize.height));
+    // Compute the final position before the single store write so imports never publish intermediate settings.
+    if (resize && changed.displayId === undefined && !requested.position) {
+      changed.position = windowManager.getResizedOverlayPosition(next.maxDisplayCount, next.displayMode, next.keyboardScale, nextSize);
     }
     configStore.updateConfig(changed);
-    if (changed.position || changed.displayId !== undefined) {
+    if (resize || changed.position || changed.displayId !== undefined) {
       const position = configStore.get('position');
       windowManager.updateOverlayPosition(position.x, position.y);
     }
@@ -299,7 +361,7 @@ export function setupIPCHandlers(
     windowManager.sendToAll(IPC_CHANNELS.CONFIG_CHANGED, finalConfig);
 
     return finalConfig;
-  });
+  };
 
   // ==================== Position Management ====================
 
@@ -319,8 +381,62 @@ export function setupIPCHandlers(
   ipcMain.handle(IPC_CHANNELS.GET_PRESET_NAME, (_, position: { x: number; y: number }, displayId?: number): string => {
     return windowManager.detectPresetFromPosition(position, displayId);
   });
+  ipcMain.handle(IPC_CHANNELS.UPDATE_CONFIG, (_, input: unknown) => applyConfigUpdate(input));
 
-  ipcMain.handle(IPC_CHANNELS.GET_POSITION_PREVIEW, (_, position: { x: number; y: number }, maxDisplayCount: number, displayId?: number, displayMode?: ConfigState['displayMode'], keyboardScale?: number) => {
+  let pendingImport: ConfigImportPreview | null = null;
+  let transferBusy = false;
+  const fileFilters = [{ name: 'JSON', extensions: ['json'] }];
+  ipcMain.handle(IPC_CHANNELS.EXPORT_CONFIG, async (): Promise<string | null> => {
+    if (transferBusy) throw new Error('Another file operation is in progress');
+    transferBusy = true;
+    try {
+      const options = { defaultPath: `keystroke-config-${new Date().toISOString().slice(0, 10)}.json`, filters: fileFilters };
+      const parent = windowManager.getSettingsWindow();
+      const result = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return null;
+      const backup: ConfigBackup = { format: CONFIG_FILE_FORMAT, schemaVersion: CONFIG_SCHEMA_VERSION,
+        appVersion: app.getVersion(), exportedAt: new Date().toISOString(), config: configStore.getConfig() };
+      await writeFile(result.filePath, JSON.stringify(backup, null, 2) + '\n', 'utf8');
+      return result.filePath;
+    } finally { transferBusy = false; }
+  });
+  ipcMain.handle(IPC_CHANNELS.PREVIEW_CONFIG_IMPORT, async (): Promise<ConfigImportPreview | null> => {
+    if (transferBusy) throw new Error('Another file operation is in progress');
+    transferBusy = true;
+    pendingImport = null;
+    try {
+      const options: Electron.OpenDialogOptions = { filters: fileFilters, properties: ['openFile'] };
+      const parent = windowManager.getSettingsWindow();
+      const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || !result.filePaths[0]) return null;
+      const file = result.filePaths[0];
+      if ((await stat(file)).size > MAX_CONFIG_FILE_BYTES) throw new RangeError('Configuration file exceeds 2 MB');
+      const content = await readFile(file, 'utf8');
+      if (Buffer.byteLength(content, 'utf8') > MAX_CONFIG_FILE_BYTES) throw new RangeError('Configuration file exceeds 2 MB');
+      const backup = parseConfigBackup(JSON.parse(content.replace(/^\uFEFF/, '')));
+      pendingImport = { ...backup, token: randomUUID(), fileName: basename(file) };
+      return pendingImport;
+    } finally { transferBusy = false; }
+  });
+  ipcMain.handle(IPC_CHANNELS.APPLY_CONFIG_IMPORT, (_, token: unknown, includePosition: unknown): ConfigState => {
+    if (!pendingImport || token !== pendingImport.token) throw new Error('Import preview is no longer available');
+    if (typeof includePosition !== 'boolean') throw new TypeError('includePosition must be a boolean');
+    const current = configStore.getConfig();
+    const imported = pendingImport.config;
+    const update: Partial<ConfigState> = { ...imported, isEnabled: current.isEnabled, isPaused: current.isPaused,
+      autoStart: current.autoStart, displayId: current.displayId };
+    if (includePosition) {
+      const size = keyboardSize(imported);
+      // The target screen remains local; imported coordinates are clamped to its current work area.
+      update.position = windowManager.getPositionPreview(imported.position, imported.maxDisplayCount,
+        current.displayId, imported.displayMode, imported.keyboardScale, size).position;
+    } else delete update.position;
+    const saved = applyConfigUpdate(update);
+    pendingImport = null;
+    return saved;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_POSITION_PREVIEW, (_, position: { x: number; y: number }, maxDisplayCount: number, displayId?: number, displayMode?: ConfigState['displayMode'], keyboardScale?: number, panelSize?: KeyboardPanelSize) => {
     if (!position || !Number.isSafeInteger(position.x) || !Number.isSafeInteger(position.y)) {
       throw new TypeError('position must contain integer x and y coordinates');
     }
@@ -334,7 +450,12 @@ export function setupIPCHandlers(
       keyboardScale > MAX_KEYBOARD_SCALE || keyboardScale % 10 !== 0)) {
       throw new RangeError('keyboardScale must be 60 to 160 in steps of 10');
     }
-    return windowManager.getPositionPreview(position, maxDisplayCount, displayId, displayMode, keyboardScale);
+    if (panelSize !== undefined && (!panelSize || !Number.isInteger(panelSize.width) || !Number.isInteger(panelSize.height) ||
+      panelSize.width < KEYBOARD_PADDING * 2 || panelSize.width > MAX_ROW_WIDTH ||
+      panelSize.height < KEYBOARD_PADDING * 2 || panelSize.height > MAX_KEYBOARD_PANEL_HEIGHT)) {
+      throw new RangeError('Invalid keyboard panel dimensions');
+    }
+    return windowManager.getPositionPreview(position, maxDisplayCount, displayId, displayMode, keyboardScale, panelSize);
   });
 
   // ==================== Window Control ====================

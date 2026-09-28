@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ConfigState, DisplayInfo, KEYBOARD_PANEL_HEIGHT, KEYBOARD_PANEL_WIDTH, Position, PositionPreview } from '../../shared/types'
+import { ConfigState, DisplayInfo, KEYBOARD_PANEL_HEIGHT, KEYBOARD_PANEL_WIDTH, KeyboardPanelSize, Position, PositionPreview } from '../../shared/types'
 
 interface PositionSettingProps {
   position: Position
@@ -7,6 +7,7 @@ interface PositionSettingProps {
   maxDisplayCount: number
   displayMode: ConfigState['displayMode']
   keyboardScale: number
+  keyboardSize?: KeyboardPanelSize
   onChange: (position: Position) => void
   onDisplayChange: (displayId: number) => void
   labels: {
@@ -38,7 +39,7 @@ interface PositionElectronAPI {
   getPresetPosition: (preset: string, displayId?: number) => Promise<Position>
   getPresetName: (position: Position, displayId?: number) => Promise<string>
   getPositionPreview?: (position: Position, maxDisplayCount: number, displayId?: number,
-    displayMode?: ConfigState['displayMode'], keyboardScale?: number) => Promise<PositionPreview>
+    displayMode?: ConfigState['displayMode'], keyboardScale?: number, keyboardSize?: KeyboardPanelSize) => Promise<PositionPreview>
   getDisplays?: () => Promise<DisplayInfo[]>
   onDisplaysChanged?: (callback: (displays: DisplayInfo[]) => void) => () => void
 }
@@ -81,14 +82,14 @@ async function getPresetNameFromMain(position: Position, displayId?: number): Pr
 }
 
 async function getPositionPreviewFromMain(position: Position, maxDisplayCount: number, displayId: number | undefined,
-  displayMode: ConfigState['displayMode'], keyboardScale: number): Promise<PositionPreview> {
+  displayMode: ConfigState['displayMode'], keyboardScale: number, keyboardSize: KeyboardPanelSize): Promise<PositionPreview> {
   const api = (window as unknown as { electronAPI?: PositionElectronAPI }).electronAPI
-  if (api?.getPositionPreview) return api.getPositionPreview(position, maxDisplayCount, displayId, displayMode, keyboardScale)
+  if (api?.getPositionPreview) return api.getPositionPreview(position, maxDisplayCount, displayId, displayMode, keyboardScale, keyboardSize)
 
   const workArea = { x: 0, y: 0, width: window.screen.availWidth, height: window.screen.availHeight }
-  const overlaySize = {
-    width: Math.min(displayMode === 'keyboard' ? Math.round(KEYBOARD_PANEL_WIDTH * keyboardScale / 100) : WINDOW_WIDTH, workArea.width),
-    height: Math.min(displayMode === 'keyboard' ? Math.round(KEYBOARD_PANEL_HEIGHT * keyboardScale / 100) : 32 + maxDisplayCount * 54 + (maxDisplayCount - 1) * 8, workArea.height),
+  const scale = Math.min(keyboardScale / 100, workArea.width / keyboardSize.width, workArea.height / keyboardSize.height)
+  const overlaySize = displayMode === 'keyboard' ? { width: Math.round(keyboardSize.width * scale), height: Math.round(keyboardSize.height * scale) } : {
+    width: Math.min(WINDOW_WIDTH, workArea.width), height: Math.min(32 + maxDisplayCount * 54 + (maxDisplayCount - 1) * 8, workArea.height),
   }
   return {
     displayId: 0,
@@ -152,13 +153,15 @@ function detectCurrentPresetFallback(position: Position): PresetValue {
   return 'custom'
 }
 
-function PositionSetting({ position, displayId, maxDisplayCount, displayMode, keyboardScale, onChange, onDisplayChange, labels }: PositionSettingProps) {
+function PositionSetting({ position, displayId, maxDisplayCount, displayMode, keyboardScale,
+  keyboardSize = { width: KEYBOARD_PANEL_WIDTH, height: KEYBOARD_PANEL_HEIGHT }, onChange, onDisplayChange, labels }: PositionSettingProps) {
   const [currentPreset, setCurrentPreset] = useState<PresetValue>('bottom-right')
   const [displays, setDisplays] = useState<DisplayInfo[]>([])
   const [displaysError, setDisplaysError] = useState(false)
   const [preview, setPreview] = useState<PositionPreview | null>(null)
   const [previewDisplayMode, setPreviewDisplayMode] = useState<ConfigState['displayMode'] | null>(null)
   const [previewKeyboardScale, setPreviewKeyboardScale] = useState<number | null>(null)
+  const [previewKeyboardSize, setPreviewKeyboardSize] = useState<KeyboardPanelSize | null>(null)
   const [draftPosition, setDraftPosition] = useState<Position | null>(null)
   const [xInput, setXInput] = useState('')
   const [yInput, setYInput] = useState('')
@@ -170,8 +173,11 @@ function PositionSetting({ position, displayId, maxDisplayCount, displayMode, ke
   const lastLiveUpdate = useRef(0)
   const editingAxis = useRef<'x' | 'y' | null>(null)
   const { x, y } = position
+  const panelWidth = keyboardSize.width
+  const panelHeight = keyboardSize.height
   const previewMatchesDisplay = preview && (displayId === null || preview.displayId === displayId) &&
-    previewDisplayMode === displayMode && previewKeyboardScale === keyboardScale
+    previewDisplayMode === displayMode && previewKeyboardScale === keyboardScale &&
+    previewKeyboardSize?.width === keyboardSize.width && previewKeyboardSize?.height === keyboardSize.height
   const selectedDisplay = displays.find((display) => display.id === (displayId ?? preview?.displayId))
   const resolvedPosition = position.x === -1 && position.y === -1 ? preview?.position : position
   const visiblePosition = draftPosition ?? resolvedPosition
@@ -213,22 +219,24 @@ function PositionSetting({ position, displayId, maxDisplayCount, displayMode, ke
     return () => {
       isActive = false
     }
-  }, [x, y, displayId, maxDisplayCount, displayMode, keyboardScale, displays])
+  }, [x, y, displayId, maxDisplayCount, displayMode, keyboardScale, keyboardSize.width, keyboardSize.height, displays])
 
   useEffect(() => {
     const currentRequest = ++previewRequestId.current
     let active = true
-    getPositionPreviewFromMain({ x, y }, maxDisplayCount, displayId ?? undefined, displayMode, keyboardScale).then((nextPreview) => {
+    const size = { width: panelWidth, height: panelHeight }
+    getPositionPreviewFromMain({ x, y }, maxDisplayCount, displayId ?? undefined, displayMode, keyboardScale, size).then((nextPreview) => {
       if (active && previewRequestId.current === currentRequest) {
         setPreview(nextPreview)
         setPreviewDisplayMode(displayMode)
         setPreviewKeyboardScale(keyboardScale)
+        setPreviewKeyboardSize(size)
       }
     }).catch((error) => {
       console.error('Failed to load position preview:', error)
     })
     return () => { active = false }
-  }, [x, y, maxDisplayCount, displayMode, keyboardScale, displayId, displays])
+  }, [x, y, maxDisplayCount, displayMode, keyboardScale, panelWidth, panelHeight, displayId, displays])
 
   useEffect(() => {
     if (visibleX === undefined || visibleY === undefined) return
