@@ -64,23 +64,32 @@
 
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/djunmaster/KeystrokeVisualizer/releases/tag/v1.0.1) 下载 Windows x64 版本：
+从 [GitHub Releases](https://github.com/djunmaster/KeystrokeVisualizer/releases/tag/v1.0.2) 下载 Windows x64 版本：
 
 | 文件 | 用途 |
 | --- | --- |
-| [Keystroke.Visualizer.Setup.1.0.1.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.1/Keystroke.Visualizer.Setup.1.0.1.exe) | 安装版，支持后续应用内更新，可选择安装目录并创建快捷方式 |
-| [Keystroke.Visualizer.1.0.1.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.1/Keystroke.Visualizer.1.0.1.exe) | 便携版，无需安装，后续版本需手动下载 |
+| [Keystroke.Visualizer.Setup.1.0.2.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.2/Keystroke.Visualizer.Setup.1.0.2.exe) | 安装版，支持后续应用内更新，可选择安装目录并创建快捷方式 |
+| [Keystroke.Visualizer.1.0.2.exe](https://github.com/djunmaster/KeystrokeVisualizer/releases/download/v1.0.2/Keystroke.Visualizer.1.0.2.exe) | 便携版，无需安装，后续版本需手动下载 |
 
 首次运行后，应用会在系统托盘驻留。通过托盘菜单打开设置，可调整显示位置、动画、显示数量和界面语言。浮层可直接拖动；设置页也支持可视化编辑位置与实时预览。
 
 本次仅提供 Windows x64 安装包。安装包未进行代码签名，Windows 可能显示“未知发布者”提示。
 
-> v1.0.1 已修复 Windows 上浮层可能被其他窗口遮挡的问题。v1.0.0 用户需手动下载并安装一次 v1.0.1，之后 Windows 安装版即可使用应用内更新。
+> v1.0.0 用户需手动下载并安装一次 v1.0.2；v1.0.1 安装版可通过“应用 → 版本更新”升级。已有主题、样式与显示设置会保留。
+
+## v1.0.2 更新内容
+
+- 新增自定义键盘布局：提供 WASD、方向键和完整键盘模板，支持行与按键编辑、排序、键宽、显示标签和空白间隔，可保存多套布局。
+- 新增配置 JSON 导入与导出：备份主题、自定义 CSS、布局与显示参数；导入前校验并显示对比摘要，默认保留本机屏幕与运行状态。
+- 修复 `Win+L` 锁屏、解锁和系统休眠后，按键可能持续显示为按下的问题；锁定期间忽略输入，恢复后重新同步状态。
+- 优化托盘图标，使用与应用 logo 一致的透明背景图标。
+- 自定义布局同步更新浮层和位置预览，适配屏幕边界与长中文标签。
 
 ## 功能特性
 
 - ⌨️ 实时按键显示（支持组合键）
 - 长按持续高亮，松开后淡出；连续重复按键合并为次数
+- 锁屏、解锁与系统休眠时清理按键状态，避免残留高亮
 - 固定键盘面板：WASD / 方向键布局，包含 Shift、Space、Ctrl
 - 自定义键盘布局：完整键盘模板、按键增删与排序、行编辑、键宽、标签和空白间隔，可保存多套布局
 - 配置 JSON 导入与导出，包含主题、自定义 CSS、布局与显示参数，导入前显示确认摘要
@@ -128,7 +137,7 @@
 
 导入先校验格式、版本、布局与 CSS，再显示当前设置和导入设置的对比；点击“应用配置”后才保存。导入会替换已保存的布局与样式列表，建议先导出当前配置。目标屏幕、开机启动、启用与暂停状态使用本机设置；勾选“同时恢复显示位置”可恢复坐标，超出本机屏幕范围时自动调整。导入文件最大 2 MB，当前备份格式版本为 1。
 
-这两项功能目前包含在源码和本地构建中，尚未加入已发布的 v1.0.1 下载包。
+这两项功能从 v1.0.2 起包含在下载包中。
 
 ## 主题与自定义样式
 

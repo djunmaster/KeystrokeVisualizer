@@ -1,6 +1,6 @@
 {
   "name": "keystroke-visualizer",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Desktop app for real-time keyboard and mouse input display",
   "main": "dist/main/index.js",
   "author": "djunmaster",
