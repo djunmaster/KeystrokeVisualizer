@@ -62,7 +62,8 @@ async function boot(partial = {}, { registered = true, failStart = false } = {})
   const store = createStore(partial);
   const timers = new Map();
   const events = new Map();
-  const calls = { starts: 0, stops: 0, shows: 0, hides: 0, unregistered: 0, broadcasts: [] };
+  const powerEvents = new Map();
+  const calls = { starts: 0, stops: 0, shows: 0, hides: 0, unregistered: 0, broadcasts: [], sessions: [] };
   let accelerator, shortcut;
   const windows = {
     createOverlayWindow() {}, showOverlay() { calls.shows++; }, hideOverlay() { calls.hides++; },
@@ -71,6 +72,7 @@ async function boot(partial = {}, { registered = true, failStart = false } = {})
   };
   const listener = {
     setPauseShortcutRegistered() {},
+    setSessionActive(active) { calls.sessions.push(active); },
     start() { calls.starts++; if (failStart) throw new Error('Hook unavailable'); },
     stop() { calls.stops++; },
   };
@@ -81,6 +83,10 @@ async function boot(partial = {}, { registered = true, failStart = false } = {})
         whenReady: () => Promise.resolve(), on: (name, callback) => events.set(name, callback),
       },
       BrowserWindow: { getAllWindows: () => [] },
+      powerMonitor: {
+        on(name, callback) { powerEvents.set(name, callback); },
+        off(name, callback) { if (powerEvents.get(name) === callback) powerEvents.delete(name); },
+      },
       globalShortcut: {
         register(value, callback) { accelerator = value; shortcut = callback; return registered; },
         unregister() { calls.unregistered++; }, unregisterAll() { calls.unregistered++; },
@@ -98,7 +104,8 @@ async function boot(partial = {}, { registered = true, failStart = false } = {})
   });
   await Promise.resolve();
   return {
-    store, calls, events, timers, get accelerator() { return accelerator; },
+    store, calls, events, timers, powerEvents, get accelerator() { return accelerator; },
+    emitPower(name) { assert.equal(typeof powerEvents.get(name), 'function'); powerEvents.get(name)(); },
     toggleShortcut() { assert.equal(typeof shortcut, 'function'); shortcut(); },
     flush() { const pending = [...timers.values()]; timers.clear(); pending.forEach((callback) => callback()); },
   };
@@ -168,6 +175,50 @@ test('hook startup failure disables display and broadcasts the final config', as
   assert.equal(h.store.get('isEnabled'), false);
   assert.ok(h.calls.hides > 0);
   assert.equal(h.calls.broadcasts.at(-1).value.isEnabled, false);
+});
+
+test('lock, unlock, suspend and resume clear input state without changing display settings or restarting the hook', async () => {
+  const h = await boot({ isEnabled: true });
+  h.flush();
+  const config = h.store.getConfig();
+  for (const [event, active] of [['lock-screen', false], ['unlock-screen', true], ['suspend', false], ['resume', true]]) {
+    h.emitPower(event);
+    assert.equal(h.calls.sessions.at(-1), active);
+  }
+  assert.deepEqual(h.store.getConfig(), config);
+  assert.equal(h.calls.starts, 1);
+  assert.equal(h.calls.stops, 0);
+});
+
+test('overlapping lock and sleep events keep input blocked until both conditions end', async () => {
+  for (const order of [
+    ['lock-screen', 'suspend', 'resume', 'unlock-screen'],
+    ['suspend', 'lock-screen', 'unlock-screen', 'resume'],
+  ]) {
+    const h = await boot();
+    order.forEach((event) => h.emitPower(event));
+    assert.deepEqual(h.calls.sessions, [false, false, false, true]);
+  }
+});
+
+test('unlocking does not resume a user-paused or disabled display', async () => {
+  for (const config of [{ isEnabled: true, isPaused: true }, { isEnabled: false }]) {
+    const h = await boot(config);
+    h.emitPower('lock-screen');
+    h.emitPower('unlock-screen');
+    h.flush();
+    assert.equal(h.calls.starts, 0);
+    assert.equal(h.store.get('isEnabled'), config.isEnabled);
+    assert.equal(h.store.get('isPaused'), config.isPaused ?? false);
+  }
+});
+
+test('quitting removes session event handlers and prevents later state updates', async () => {
+  const h = await boot();
+  assert.equal(h.powerEvents.size, 4);
+  h.events.get('before-quit')();
+  h.events.get('will-quit')();
+  assert.equal(h.powerEvents.size, 0);
 });
 
 function persistedConfigHarness(partial = {}) {

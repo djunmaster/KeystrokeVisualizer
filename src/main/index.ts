@@ -1,7 +1,7 @@
 // Main Process Entry
 // Batch 6: Full main process integration
 
-import { app, BrowserWindow, globalShortcut } from 'electron';
+import { app, BrowserWindow, globalShortcut, powerMonitor } from 'electron';
 import { ConfigStore } from './ConfigStore';
 import { WindowManager } from './WindowManager';
 import { TrayManager } from './TrayManager';
@@ -23,6 +23,7 @@ let keyListener: KeyListener;
 let shouldStopKeyListener = true;
 let pendingKeyListenerStart: ReturnType<typeof setTimeout> | null = null;
 let pauseShortcutRegistered = false;
+let removeInputSessionHandlers: (() => void) | null = null;
 
 /**
  * Initialize all modules
@@ -39,12 +40,35 @@ function initializeModules(): void {
 
   // 4. KeyListener (depends on WindowManager)
   keyListener = new KeyListener(windowManager, configStore);
+  setupInputSessionHandlers();
 
   // 5. Setup IPC handlers
   setupIPCHandlers(configStore, windowManager, keyListener, () => ({
     accelerator: PAUSE_ACCELERATOR,
     registered: pauseShortcutRegistered,
   }));
+}
+
+function setupInputSessionHandlers(): void {
+  let locked = false;
+  let suspended = false;
+  const updateSession = () => keyListener.setSessionActive(!locked && !suspended);
+  const handlers = {
+    'lock-screen': () => { locked = true; updateSession(); },
+    'unlock-screen': () => { locked = false; updateSession(); },
+    suspend: () => { suspended = true; updateSession(); },
+    resume: () => { suspended = false; updateSession(); },
+  };
+  powerMonitor.on('lock-screen', handlers['lock-screen']);
+  powerMonitor.on('unlock-screen', handlers['unlock-screen']);
+  powerMonitor.on('suspend', handlers.suspend);
+  powerMonitor.on('resume', handlers.resume);
+  removeInputSessionHandlers = () => {
+    powerMonitor.off('lock-screen', handlers['lock-screen']);
+    powerMonitor.off('unlock-screen', handlers['unlock-screen']);
+    powerMonitor.off('suspend', handlers.suspend);
+    powerMonitor.off('resume', handlers.resume);
+  };
 }
 
 /**
@@ -145,6 +169,8 @@ function updateKeyListenerState(enabled: boolean): void {
  * Cleanup resources
  */
 function cleanup(): void {
+  removeInputSessionHandlers?.();
+  removeInputSessionHandlers = null;
   globalShortcut.unregister(PAUSE_ACCELERATOR);
   pauseShortcutRegistered = false;
   if (pendingKeyListenerStart !== null) {

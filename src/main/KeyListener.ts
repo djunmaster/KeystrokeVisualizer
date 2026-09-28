@@ -29,6 +29,7 @@ export class KeyListener {
   private windowManager: WindowManager;
   private language: ConfigState['language'];
   private isListening = false;
+  private isSessionActive = true;
   private pauseShortcutRegistered = false;
   private pressedKeys = new Set<number>();
   private lastWheelLabel = '';
@@ -106,10 +107,13 @@ export class KeyListener {
       uIOhook.stop();
     } finally {
       this.resetKeyState();
-      this.lastWheelLabel = '';
-      this.lastWheelTime = 0;
-      this.sendKeyState();
     }
+  }
+
+  setSessionActive(active: boolean): void {
+    this.isSessionActive = active;
+    // Secure desktop transitions can swallow keyup; clear both sides of the transition.
+    this.resetKeyState();
   }
 
   getKeyState(): KeyStateEvent {
@@ -128,6 +132,7 @@ export class KeyListener {
    * Handle keydown event.
    */
   private handleKeyDown(event: UiohookKeyboardEvent): void {
+    if (!this.isSessionActive) return;
     const keyCode = event.keycode;
     const repeat = this.pressedKeys.has(keyCode);
     this.pressedKeys.add(keyCode);
@@ -148,6 +153,7 @@ export class KeyListener {
   }
 
   private handleWheel(event: UiohookWheelEvent): void {
+    if (!this.isSessionActive) return;
     if (event.rotation === 0) return;
 
     const labels = mouseLabels[this.language];
@@ -168,6 +174,7 @@ export class KeyListener {
   }
 
   private handleMouseDown(event: UiohookMouseEvent): void {
+    if (!this.isSessionActive) return;
     if (event.button !== 3) return;
     const label = mouseLabels[this.language].middle;
     this.sendKeys(this.getMouseDisplayKeys(event, label));
@@ -192,6 +199,7 @@ export class KeyListener {
    * Handle keyup event.
    */
   private handleKeyUp(event: UiohookKeyboardEvent): void {
+    if (!this.isSessionActive) return;
     const keyCode = event.keycode;
     if (!this.pressedKeys.delete(keyCode)) return;
     this.updateModifierState(keyCode);
@@ -344,6 +352,9 @@ export class KeyListener {
       alt: false,
       meta: false,
     };
+    this.lastWheelLabel = '';
+    this.lastWheelTime = 0;
+    this.sendKeyState();
   }
 
   /**

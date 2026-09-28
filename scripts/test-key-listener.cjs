@@ -15,7 +15,7 @@ const IPC_CHANNELS = {
   KEY_STATE_CHANGED: 'key-state-changed',
 };
 const UiohookKey = new Proxy({
-  A: 30, W: 17, F9: 67, Ctrl: 29, CtrlRight: 3613, Shift: 42, ShiftRight: 54,
+  A: 30, L: 38, W: 17, F9: 67, Ctrl: 29, CtrlRight: 3613, Shift: 42, ShiftRight: 54,
   Alt: 56, AltRight: 3640, Meta: 3675, MetaRight: 3676,
 }, {
   get(target, key) {
@@ -165,6 +165,49 @@ test('restored listener uses native modifier flags for keys already held at star
   listener.start();
   emitKey('keydown', UiohookKey.A, { ctrlKey: true, shiftKey: true });
   assert.deepEqual(events(IPC_CHANNELS.KEY_PRESSED).at(-1).keys, ['Ctrl', 'Shift', 'A']);
+});
+
+test('locking clears Win+L even without keyup and ignores all input until the session is active', () => {
+  const { listener, emitKey, hook, events, messages } = createHarness();
+  listener.start();
+  emitKey('keydown', UiohookKey.Meta);
+  emitKey('keydown', UiohookKey.L, { metaKey: true });
+  emitKey('keydown', UiohookKey.L, { metaKey: true });
+  assert.deepEqual(events(IPC_CHANNELS.KEY_PRESSED).at(-1).keys, ['Win', 'L']);
+  listener.setSessionActive(false);
+  assert.deepEqual(listener.getKeyState().keyCodes, []);
+  assert.deepEqual(events(IPC_CHANNELS.KEY_STATE_CHANGED).at(-1).keyCodes, []);
+  const clearedCount = messages.length;
+  emitKey('keydown', UiohookKey.L, { metaKey: true });
+  emitKey('keyup', UiohookKey.Meta);
+  hook.emit('wheel', { direction: 3, rotation: -1 });
+  hook.emit('mousedown', { button: 3 });
+  assert.equal(messages.length, clearedCount, 'session transitions must not reintroduce queued input');
+  listener.setSessionActive(true);
+  assert.deepEqual(listener.getKeyState().keyCodes, []);
+  emitKey('keydown', UiohookKey.L);
+  assert.deepEqual(events(IPC_CHANNELS.KEY_PRESSED).at(-1).keys, ['L']);
+  assert.equal(events(IPC_CHANNELS.KEY_PRESSED).at(-1).repeat, false);
+  assert.equal(hook.listenerCount('keydown'), 1, 'session changes do not restart the native hook');
+});
+
+test('session resets clear wheel throttling and remain blocked across pause and resume', () => {
+  const { listener, hook, emitKey, events } = createHarness();
+  listener.start();
+  hook.emit('wheel', { direction: 3, rotation: -1 });
+  listener.setSessionActive(false);
+  listener.stop();
+  listener.start();
+  emitKey('keydown', UiohookKey.A);
+  assert.deepEqual(listener.getKeyState().keyCodes, []);
+  assert.equal(events(IPC_CHANNELS.KEY_PRESSED).length, 1);
+  listener.setSessionActive(true);
+  hook.emit('wheel', { direction: 3, rotation: -1 });
+  assert.equal(events(IPC_CHANNELS.KEY_PRESSED).length, 2, 'the first wheel event after unlocking is not throttled');
+  emitKey('keydown', UiohookKey.Shift, { shiftKey: true });
+  listener.setSessionActive(true);
+  emitKey('keydown', UiohookKey.A);
+  assert.deepEqual(events(IPC_CHANNELS.KEY_PRESSED).at(-1).keys, ['A']);
 });
 
 test('filters only the default pause shortcut from display history', () => {
